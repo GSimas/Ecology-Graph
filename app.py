@@ -4,6 +4,7 @@ import networkx as nx
 from pyvis.network import Network
 from sickle import Sickle
 import unicodedata
+import json
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -23,29 +24,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- FUNÇÕES DE BACK-END (COM CACHE PARA PERFORMANCE) ---
-@st.cache_data(ttl=3600, show_spinner="Navegando pelo repositório da UFSC...")
-def extrair_dados_ufsc(limite=30):
-    """Extrai os dados via OAI-PMH e guarda em cache para a tela não recarregar toda hora."""
-    sickle = Sickle('https://repositorio.ufsc.br/oai/request')
-    records = sickle.ListRecords(metadataPrefix='oai_dc', set='col_123456789_76395')
-    
-    dados = []
-    for record in records:
-        meta = record.metadata
-        titulo = meta.get('title', [''])[0]
-        autores = meta.get('creator', [])
-        contribuidores = meta.get('contributor', [])
-        orientador = contribuidores[0] if len(contribuidores) > 0 else None
-        co_orientadores = contribuidores[1:] if len(contribuidores) > 1 else []
-        pks = [pk.lower().strip() for pk in meta.get('subject', []) if pk]
-        ano = meta.get('date', [''])[0].split('-')[0][:4] if meta.get('date') else "Sem ano"
-        
-        dados.append({
-            'titulo': titulo, 'autores': autores, 'orientador': orientador,
-            'co_orientadores': co_orientadores, 'palavras_chave': list(set(pks)), 'ano': ano
-        })
-        if len(dados) >= limite: break
-    return dados
+@st.cache_data
+def carregar_dados_locais():
+    """Lê o arquivo JSON estático do repositório."""
+    try:
+        with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
+            dados = json.load(f)
+        return dados
+    except FileNotFoundError:
+        st.error("Arquivo base_ppgegc.json não encontrado. Verifique se ele está no repositório.")
+        return []
+
+# E na hora de chamar os dados, você simplesmente usa:
+# dados = carregar_dados_locais()
 
 @st.cache_resource
 def gerar_grafo_html(dados):

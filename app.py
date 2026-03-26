@@ -68,7 +68,7 @@ def gerar_grafo_html(dados):
             G.add_edge(doc_id, pk)
 
     # Configuração do Pyvis
-    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True)
+    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
     net.from_nx(G)
     net.set_options("""
     var options = {

@@ -71,67 +71,14 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 # --- FUNÇÕES DE EXTRAÇÃO AO VIVO (OAI-PMH) ---
 
-@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
-def obter_programas_ufsc():
-    """Conecta ao repositório, limpa os nomes, agrupa clones e mantém apenas a Coleção Original (Menor ID)."""
+@st.cache_data
+def carregar_catalogo_programas():
+    """Lê o catálogo de programas previamente validado e limpo."""
     try:
-        sickle = Sickle('https://repositorio.ufsc.br/oai/request')
-        sets = sickle.ListSets()
-        colecoes_temporarias = {}
-        
-        for s in sets:
-            if s.setSpec.startswith('col_'):
-                nome_original = s.setName.strip()
-                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', nome_original.lower()) if unicodedata.category(c) != 'Mn')
-                
-                # Filtro Lexical: Apenas Pós-Graduação
-                if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm:
-                    
-                    # Removemos os prefixos padrão para forçar o agrupamento de nomes iguais
-                    nome_limpo = nome_original
-                    prefixos = [
-                        "Teses e Dissertações - ", "Teses e dissertações - ", 
-                        "Teses de Doutorado - ", "Dissertações de Mestrado - ",
-                        "Teses - ", "Dissertações - "
-                    ]
-                    for p in prefixos:
-                        if nome_limpo.startswith(p):
-                            nome_limpo = nome_limpo.replace(p, "").strip()
-                    
-                    # Extrai o ID numérico final (ex: col_123456789_75141 -> 75141)
-                    try:
-                        id_num = int(s.setSpec.split('_')[-1])
-                    except ValueError:
-                        id_num = 9999999 # Fallback de segurança
-                        
-                    if nome_limpo not in colecoes_temporarias:
-                        colecoes_temporarias[nome_limpo] = []
-                        
-                    # Guarda todas as variantes de um mesmo curso
-                    colecoes_temporarias[nome_limpo].append({
-                        'id': s.setSpec,
-                        'id_num': id_num
-                    })
-                    
-        # Constrói a lista final eliminando os clones recentes/vazios
-        colecoes_finais = {}
-        for nome_limpo, lista_sets in colecoes_temporarias.items():
-            
-            # ORDENA POR ID CRESCENTE. 
-            # A coleção raiz/verdadeira no DSpace tem sempre o menor ID (ex: 75141).
-            # As coleções na casa dos 214xxx são fantasmas estruturais.
-            lista_sets_ordenada = sorted(lista_sets, key=lambda x: x['id_num'])
-            
-            # Pega estritamente a primeira da lista (a original)
-            item_oficial = lista_sets_ordenada[0]
-            
-            # Formata o nome para a interface, mantendo a indicação do ID correto
-            nome_exibicao = f"{nome_limpo} (ID Oficial: {item_oficial['id_num']})"
-            colecoes_finais[nome_exibicao] = item_oficial['id']
-            
-        return dict(sorted(colecoes_finais.items()))
-    except Exception as e:
-        st.error(f"Erro ao conectar com a UFSC: {e}")
+        with open('programas_ufsc.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        st.error("⚠️ Ficheiro 'programas_ufsc.json' não encontrado. Por favor, adicione-o à raiz do projeto.")
         return {}
 
 def extrair_melhor_ano(lista_datas):
@@ -518,35 +465,29 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
 
 if 'dados_completos' not in st.session_state:
     st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
-    st.markdown("O sistema está conectado ao servidor OAI-PMH da universidade para listar os programas disponíveis.")
     
-    with st.spinner("A mapear coleções na UFSC..."):
-        colecoes_disponiveis = obter_programas_ufsc()
+    # AGORA CARREGA INSTANTANEAMENTE DO JSON LOCAL
+    colecoes_disponiveis = carregar_catalogo_programas()
     
     if colecoes_disponiveis:
         st.markdown("### Selecione os Programas para Analisar")
         
-        # 1. A SELEÇÃO AGORA FICA FORA DO FORMULÁRIO (Para atualizar em tempo real)
         programas_selecionados = st.multiselect("Pode selecionar múltiplos Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
         
-        # 2. EXIBIÇÃO DINÂMICA DE INFORMAÇÕES
         if programas_selecionados:
             st.markdown("#### ℹ️ Informações das Coleções Selecionadas")
             for prog in programas_selecionados:
                 set_spec = colecoes_disponiveis[prog]
                 
-                # Engenharia reversa para criar o link do repositório
-                # O setSpec no DSpace é formato 'col_123456789_74645' e o URL é '123456789/74645'
+                # Monta o link Handle dinamicamente
                 partes_id = set_spec.replace('col_', '').split('_')
                 if len(partes_id) >= 2:
                     url_repositorio = f"https://repositorio.ufsc.br/handle/{partes_id[0]}/{partes_id[1]}"
                 else:
                     url_repositorio = "https://repositorio.ufsc.br/"
                 
-                # Cria um card de informação elegante
-                st.info(f"**{prog}**\n\n🔗 [Acessar a página original na UFSC]({url_repositorio}) | 🪪 ID Interno OAI: `{set_spec}`")
+                st.info(f"**{prog}**\n\n🔗 [Aceder à página original na UFSC]({url_repositorio}) | 🪪 ID Interno OAI: `{set_spec}`")
         
-        # 3. O FORMULÁRIO AGORA CONTROLA APENAS O BOTÃO DE EXTRAÇÃO
         with st.form("form_extracao"):
             st.warning("⚠️ A extração ao vivo agrupa todos os programas. Selecionar muitos programas exigirá mais tempo de download.")
             btn_extrair = st.form_submit_button("Iniciar Extração ao Vivo", type="primary")
@@ -559,8 +500,9 @@ if 'dados_completos' not in st.session_state:
             else:
                 dados_agregados = []
                 for prog in programas_selecionados:
-                    status_box.info(f"🚀 Iniciando conexão com: {prog}...")
+                    status_box.info(f"🚀 Iniciando conexão OAI-PMH com: {prog}...")
                     set_spec_alvo = colecoes_disponiveis[prog]
+                    # Passamos o set_spec real encontrado no JSON
                     dados = realizar_extracao(set_spec_alvo, status_box, nome_prog=prog)
                     dados_agregados.extend(dados)
                 
@@ -575,8 +517,7 @@ if 'dados_completos' not in st.session_state:
                         
                     st.rerun() 
     else:
-        st.error("Não foi possível acessar a lista da UFSC neste momento.")
-    st.stop()
+        st.stop()
 
 
 # --- O DASHBOARD (SÓ APARECE APÓS A EXTRAÇÃO) ---

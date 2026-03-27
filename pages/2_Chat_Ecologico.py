@@ -18,6 +18,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- INICIALIZAÇÃO DA API (AUTOMÁTICA VIA SECRETS) ---
+# Tenta obter a chave dos secrets. Se não encontrar, avisa o administrador.
+try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+    client = Groq(api_key=GROQ_API_KEY)
+except Exception:
+    st.error("ERRO: A GROQ_API_KEY não foi configurada nos Secrets do Streamlit.")
+    st.stop()
+
 # --- FUNÇÕES DE DADOS ---
 @st.cache_data
 def carregar_contexto_base():
@@ -25,73 +34,59 @@ def carregar_contexto_base():
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
             dados = json.load(f)
         
-        # Criamos um resumo textual para a IA não se perder em milhares de linhas
-        # Selecionamos os campos essenciais para economizar "tokens"
+        # Estrutura um resumo compacto para fornecer contexto à IA
+        # Enviamos os metadados principais dos documentos para o "cérebro" do Chatbot
         resumo = []
-        for d in dados[:150]: # Enviamos os 150 registros mais recentes para contexto
+        for d in dados:
             resumo.append(
-                f"Título: {d['titulo']} | Nível: {d['nivel_academico']} | "
-                f"Autor: {', '.join(d['autores'])} | Orientador: {d['orientador']} | "
-                f"Ano: {d['ano']} | Conceitos: {', '.join(d['palavras_chave'])}"
+                f"Doc: {d['titulo']} | Nível: {d['nivel_academico']} | "
+                f"Orientador: {d['orientador']} | Ano: {d['ano']} | "
+                f"Conceitos: {', '.join(d['palavras_chave'])}"
             )
         return "\n".join(resumo)
     except:
-        return "Erro ao carregar base de dados."
+        return "Erro ao aceder à base de dados base_ppgegc.json."
 
 # --- INTERFACE DO CHAT ---
-st.title("🤖 Chatbot da Ecologia do Conhecimento")
+st.title("🤖 Assistente de Inteligência Ecológica")
 st.markdown("""
-Este assistente utiliza Inteligência Artificial (Llama 3 via Groq) para analisar a base de dados do PPGEGC. 
-Você pode perguntar coisas como: *'Quem mais orienta sobre Gestão do Conhecimento?'* ou *'Qual a evolução das teses sobre IA?'*
+Este chatbot analisa em tempo real a base de dados do PPGEGC para responder a questões complexas sobre a estrutura do conhecimento no programa.
 """)
-
-# Configuração da API Key (Segurança)
-# Dica: No Streamlit Cloud, você pode colocar isso em 'Secrets'
-with st.sidebar:
-    st.header("Configuração")
-    api_key = st.text_input("Insira sua Groq API Key:", type="password")
-    st.info("Obtenha sua chave grátis em console.groq.com")
-
-if not api_key:
-    st.warning("Por favor, insira a API Key na barra lateral para conversar.")
-    st.stop()
-
-client = Groq(api_key=api_key)
 
 # Inicializa o histórico do chat
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Exibe mensagens anteriores
+# Exibe mensagens anteriores do histórico
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Lógica do Chat
-if prompt := st.chat_input("Pergunte algo sobre a base do PPGEGC..."):
-    # Adiciona pergunta do usuário ao histórico
+# Lógica de interação
+if prompt := st.chat_input("Perquise a ecologia do conhecimento..."):
+    # Adiciona a pergunta ao histórico
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Preparar Contexto para a IA
+    # Prepara o prompt do sistema com a base de dados completa
     contexto_dados = carregar_contexto_base()
     
     system_prompt = f"""
-    Você é um especialista em Ecologia do Conhecimento e consultor do PPGEGC/UFSC.
-    Seu objetivo é responder perguntas baseadas estritamente nos dados abaixo.
+    Você é um consultor especializado na Ecologia do Conhecimento do PPGEGC/UFSC.
+    Sua missão é analisar os dados fornecidos e responder de forma precisa, acadêmica e perspicaz.
     
-    DADOS DA BASE:
+    BASE DE CONHECIMENTO DISPONÍVEL:
     {contexto_dados}
     
-    REGRAS:
-    1. Se a informação não estiver nos dados, diga que não possui esse registro específico.
-    2. Seja conciso, acadêmico e útil.
-    3. Se o usuário perguntar sobre tendências, analise os anos e os conceitos fornecidos.
-    4. Você fala Português do Brasil.
+    INSTRUÇÕES:
+    1. Baseie-se exclusivamente nos dados acima para responder sobre pessoas, anos e temas.
+    2. Se identificar tendências (ex: aumento de temas sobre IA), mencione-as.
+    3. Seja cortês, mas direto ao ponto.
+    4. Responda sempre em Português.
     """
 
-    # Chamada para a LLM
+    # Chamada para a LLM (Llama 3 70B para maior profundidade analítica)
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
@@ -103,19 +98,19 @@ if prompt := st.chat_input("Pergunte algo sobre a base do PPGEGC..."):
                     {"role": "system", "content": system_prompt},
                     *[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
                 ],
-                temperature=0.5,
-                max_tokens=1024,
+                temperature=0.4,
+                max_tokens=1500,
                 stream=True
             )
 
+            # Efeito de streaming para a resposta
             for chunk in completion:
                 if chunk.choices[0].delta.content:
                     full_response += chunk.choices[0].delta.content
                     message_placeholder.markdown(full_response + "▌")
             
             message_placeholder.markdown(full_response)
-            # Adiciona resposta da IA ao histórico
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:
-            st.error(f"Erro na comunicação com a IA: {e}")
+            st.error(f"Houve uma falha na comunicação com o motor de IA: {e}")

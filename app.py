@@ -10,6 +10,9 @@ import unicodedata
 from collections import Counter
 from sickle import Sickle
 from sickle.oaiexceptions import NoRecordsMatch
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import NMF
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -35,76 +38,76 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 # --- FUNÇÕES DE LÓGICA TEMÁTICA ---
-def aplicar_macrotemas(dados):
-    # Dicionário Refinado: Temas específicos com pesos e subáreas
-    # Adicionei termos que dialogam com sua pesquisa em Ecologia e Antirracismo
-    taxonomia = {
-        "Epistemologias & Ecologia do Conhecimento": [
-            "conhecimento", "saberes", "epistemologia", "diálogo", "complexidade", 
-            "interdisciplinar", "transdisciplinar", "educação", "ensino", "pedagogia",
-            "ciência e arte", "ecologia do conhecimento", "boaventura"
-        ],
-        "Termofluidodinâmica & Energias": [
-            "calor", "térmica", "fluido", "combustão", "refrigeração", "energia", 
-            "solar", "eólica", "escoamento", "termodinâmica", "turbina"
-        ],
-        "Materiais & Manufatura": [
-            "metalurgia", "aço", "liga", "cerâmica", "polímero", "usinagem", 
-            "fabricação", "soldagem", "microestrutura", "corrosão", "desgaste"
-        ],
-        "Vibrações, Acústica & Dinâmica": [
-            "vibração", "acústica", "ruído", "dinâmica", "controle", "automação",
-            "robótica", "mecatrônica", "sinal", "frequência"
-        ],
-        "Projeto & Mecânica dos Sólidos": [
-            "estruturas", "elementos de máquinas", "projeto", "fadiga", "tensão",
-            "deformação", "mecânica sólida", "mancal", "engrenagem"
-        ],
-        "Ecologia, Meio Ambiente & Tempo": [
-            "ecologia", "ambiental", "sustentabilidade", "clima", "natureza",
-            "tempo", "ecossistema", "resíduos", "impacto", "hídrico"
-        ],
-        "Estudos Decoloniais & Antirracismo": [
-            "negra", "antirracista", "racismo", "decolonial", "quilombola", 
-            "indígena", "identidade", "raça", "colonialidade", "consciência negra"
-        ],
-        "Saúde, Bioengenharia & Vida": [
-            "saúde", "biologia", "médico", "clínica", "biomecânica", "prótese",
-            "biomateriais", "hospitalar", "cuidado", "vida"
-        ],
-        "Arte, Performance & Poética": [
-            "arte", "literatura", "poesia", "estética", "performance", 
-            "narrativa", "cultura", "expressão", "corpo", "teatro"
-        ]
-    }
-    
+def aplicar_macrotemas(dados, num_topicos=12):
+    """
+    Motor de Modelagem de Tópicos Não Supervisionado.
+    Lê os textos e gera os macrotemas organicamente.
+    """
+    # Lista de stopwords (palavras sem peso semântico) para limpar o ruído
+    stopwords_pt = [
+        "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
+        "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser", 
+        "quando", "muito", "há", "nos", "já", "está", "eu", "também", "só", "pelo", "pela", "até", "isso", "ela", 
+        "entre", "era", "depois", "sem", "mesmo", "aos", "ter", "seus", "quem", "nas", "me", "esse", "eles", "estão", 
+        "você", "tinha", "foram", "essa", "num", "nem", "suas", "meu", "às", "minha", "têm", "numa", "pelos", "elas", 
+        "havia", "seja", "qual", "será", "nós", "tenho", "lhe", "deles", "essas", "esses", "pelas", "este", "fosse", "dele",
+        "estudo", "análise", "trabalho", "pesquisa", "objetivo", "resultados", "conclusão", "dissertação", "tese", "ufsc", "sobre"
+    ]
+
+    # 1. Preparar o Corpus (Corpo do Texto)
+    textos = []
     for doc in dados:
-        # 1. Construir o "Corpo de Análise" (Título + Keywords + Resumo)
-        # O resumo tem um peso menor (ou pode ser tratado igual, aqui usamos string única)
-        texto_analise = (
-            str(doc.get('titulo', '')) + " " + 
-            " ".join(doc.get('palavras_chave', [])) + " " + 
-            str(doc.get('resumo', ''))
-        ).lower()
+        # Funde título, palavras-chave e resumo
+        texto_bruto = f"{doc.get('titulo', '')} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
+        # Limpa pontuação e números, deixando apenas palavras
+        texto_limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', texto_bruto).lower()
+        textos.append(texto_limpo)
+
+    # Prevenção: Se a amostra for muito pequena, reduzimos o número de tópicos
+    n_topicos_seguro = min(num_topicos, max(1, len(textos) // 3))
+
+    if n_topicos_seguro < 2:
+        for doc in dados: doc['macrotema'] = "Amostra Insuficiente para Agrupamento"
+        return dados
+
+    # 2. Vetorização (TF-IDF): Transforma palavras em pesos matemáticos
+    # Ignora palavras que aparecem em mais de 85% dos docs (muito comuns) ou em menos de 2 (muito raras)
+    vectorizer = TfidfVectorizer(max_df=0.85, min_df=2, stop_words=stopwords_pt, max_features=1500)
+    
+    try:
+        tfidf_matrix = vectorizer.fit_transform(textos)
+    except ValueError:
+        # Fallback se o vocabulário for extremamente pobre
+        for doc in dados: doc['macrotema'] = "Vocabulário Insuficiente"
+        return dados
+
+    # 3. Extração dos Tópicos (NMF)
+    nmf_model = NMF(n_components=n_topicos_seguro, random_state=42, max_iter=500)
+    nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
+
+    # 4. Batizar os Macrotemas com as palavras mais representativas de cada cluster
+    feature_names = vectorizer.get_feature_names_out()
+    nomes_topicos = []
+    
+    for topic_idx, topic in enumerate(nmf_model.components_):
+        # Pega os índices das 3 palavras com maior peso neste tópico
+        top_features_ind = topic.argsort()[:-4:-1] 
+        top_words = [feature_names[i] for i in top_features_ind]
         
-        # 2. Sistema de Pontuação por Tema
-        pontuacao = {tema: 0 for tema in taxonomia.keys()}
+        # O nome do macrotema será algo como "Calor / Escoamento / Fluido" ou "Escola / Ensino / Prática"
+        nome_macrotema = " / ".join(top_words).title()
+        nomes_topicos.append(nome_macrotema)
+
+    # 5. Distribuir os rótulos gerados de volta para os documentos
+    for i, doc in enumerate(dados):
+        topico_vencedor_idx = nmf_matrix[i].argmax()
         
-        for tema, palavras in taxonomia.items():
-            for palavra in palavras:
-                # Conta quantas vezes a palavra aparece no texto completo
-                count = texto_analise.count(palavra)
-                pontuacao[tema] += count
-        
-        # 3. Decidir o vencedor (ou Multidisciplinar se empatar em zero)
-        max_pontos = max(pontuacao.values())
-        if max_pontos > 0:
-            # Pega o tema com maior pontuação
-            tema_vencedor = max(pontuacao, key=pontuacao.get)
-            doc['macrotema'] = tema_vencedor
+        # Verifica se o documento realmente tem relação com o tópico (peso > 0)
+        if nmf_matrix[i][topico_vencedor_idx] > 0.01:
+            doc['macrotema'] = nomes_topicos[topico_vencedor_idx]
         else:
-            doc['macrotema'] = "Multidisciplinar / Transversal"
-            
+            doc['macrotema'] = "Disperso / Sem Agrupamento Claro"
+
     return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---

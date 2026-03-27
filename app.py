@@ -13,6 +13,7 @@ from sickle.oaiexceptions import NoRecordsMatch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
 import re
+from groq import Groq
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -38,14 +39,11 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 # --- FUNÇÕES DE LÓGICA TEMÁTICA ---
-def aplicar_macrotemas(dados, num_topicos=12):
+def aplicar_macrotemas(dados, api_key, num_topicos=12):
     """
-    Motor de Modelagem de Tópicos Não Supervisionado (NMF).
-    Gera macrotemas agrupando textos por similaridade estatística.
+    Motor Híbrido: Agrupamento Estatístico (NMF) + Nomenclatura Generativa (Groq/LLM).
     """
-    # 1. Stopwords Expandidas (Português + Inglês Acadêmico)
     stopwords_completas = [
-        # Português Básico e Acadêmico
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser", 
         "quando", "muito", "há", "nos", "já", "está", "eu", "também", "só", "pelo", "pela", "até", "isso", "ela", 
@@ -53,13 +51,7 @@ def aplicar_macrotemas(dados, num_topicos=12):
         "você", "tinha", "foram", "essa", "num", "nem", "suas", "meu", "às", "minha", "têm", "numa", "pelos", "elas", 
         "havia", "seja", "qual", "será", "nós", "tenho", "lhe", "deles", "essas", "esses", "pelas", "este", "fosse", "dele",
         "estudo", "análise", "trabalho", "pesquisa", "objetivo", "resultados", "conclusão", "dissertação", "tese", "ufsc", "sobre",
-        "neste", "desta", "sendo", "assim", "através", "partir", "uso", "método",
-        
-        # Inglês Básico e Acadêmico
-        "the", "of", "and", "in", "to", "a", "is", "for", "by", "on", "with", "that", "this", "as", "an", "are", 
-        "from", "at", "be", "it", "or", "which", "was", "these", "we", "can", "have", "has", "not", "but", "were", 
-        "all", "one", "use", "using", "used", "study", "analysis", "work", "research", "objective", "results", 
-        "conclusion", "abstract", "paper", "thesis", "dissertation", "university", "based", "model", "system"
+        "neste", "desta", "sendo", "assim", "através", "partir", "uso", "método", "the", "of", "and", "in", "to", "is", "for"
     ]
 
     textos = []
@@ -69,14 +61,12 @@ def aplicar_macrotemas(dados, num_topicos=12):
         textos.append(texto_limpo)
 
     n_topicos_seguro = min(num_topicos, max(1, len(textos) // 3))
-
     if n_topicos_seguro < 2:
         for doc in dados: doc['macrotema'] = "Amostra Insuficiente"
         return dados
 
-    # TF-IDF com a lista de stopwords bilíngue
+    # 1. Agrupamento Matemático (Clusterização)
     vectorizer = TfidfVectorizer(max_df=0.85, min_df=2, stop_words=stopwords_completas, max_features=1500)
-    
     try:
         tfidf_matrix = vectorizer.fit_transform(textos)
     except ValueError:
@@ -85,31 +75,46 @@ def aplicar_macrotemas(dados, num_topicos=12):
 
     nmf_model = NMF(n_components=n_topicos_seguro, random_state=42, max_iter=500)
     nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
-
     feature_names = vectorizer.get_feature_names_out()
+    
+    # 2. IA Generativa para Nomenclatura
+    client = Groq(api_key=api_key)
     nomes_topicos = []
     
-    # 2. Formatação Humanizada dos Títulos
     for topic_idx, topic in enumerate(nmf_model.components_):
-        top_features_ind = topic.argsort()[:-4:-1] 
-        top_words = [feature_names[i].title() for i in top_features_ind]
+        # Pegamos as 12 palavras mais fortes do cluster para dar contexto à IA
+        top_features_ind = topic.argsort()[:-13:-1] 
+        top_words = [feature_names[i] for i in top_features_ind]
         
-        # Cria uma frase fluida em vez de termos com barras
-        if len(top_words) >= 3:
-            nome_macrotema = f"{top_words[0]}, {top_words[1]} e {top_words[2]}"
-        elif len(top_words) == 2:
-            nome_macrotema = f"{top_words[0]} e {top_words[1]}"
-        else:
-            nome_macrotema = top_words[0] if top_words else "Tópico Desconhecido"
+        # O "Cérebro" do LLM
+        prompt = f"""Você é um classificador acadêmico sênior com visão transdisciplinar. 
+Analise este conjunto de palavras-chave extraídas de teses universitárias que pertencem ao mesmo cluster de pesquisa:
+{', '.join(top_words)}.
+
+Crie um nome de Macrotema curto, formal, elegante e claro (máximo de 3 a 5 palavras) em Português que resuma e intitule essa área de pesquisa.
+RETORNE APENAS O NOME DO MACROTEMA. Sem aspas, sem pontos finais, sem explicações. Apenas o título."""
+
+        try:
+            chat_completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama3-8b-8192", # Modelo rápido e excelente para tarefas curtas
+                temperature=0.3, # Baixa temperatura = maior precisão acadêmica
+                max_tokens=25
+            )
+            nome_macrotema = chat_completion.choices[0].message.content.strip().strip('"').strip("'")
+        except Exception as e:
+            # Plano B caso a API falhe (timeout, limite de uso, etc)
+            nome_macrotema = f"{top_words[0].title()} e Aplicações Correlatas"
             
         nomes_topicos.append(nome_macrotema)
 
+    # 3. Devolver os rótulos aos documentos
     for i, doc in enumerate(dados):
         topico_vencedor_idx = nmf_matrix[i].argmax()
         if nmf_matrix[i][topico_vencedor_idx] > 0.01:
             doc['macrotema'] = nomes_topicos[topico_vencedor_idx]
         else:
-            doc['macrotema'] = "Disperso / Sem Agrupamento Claro"
+            doc['macrotema'] = "Pesquisa Interdisciplinar Dispersa"
 
     return dados
 
@@ -332,15 +337,28 @@ st.header("🧠 Análise Temática Estrutural")
 
 if not st.session_state['macrotemas_computados']:
     st.info("Os documentos extraídos ainda não possuem categorização temática.")
+    
     if st.button("Computar Macrotemas Agora", type="primary"):
-        with st.spinner("Analisando vocabulário e atribuindo macrotemas..."):
-            st.session_state['dados_completos'] = aplicar_macrotemas(dados_completos)
-            st.session_state['macrotemas_computados'] = True
+        # Tenta recuperar a chave dos Secrets do Streamlit
+        try:
+            minha_chave_groq = st.secrets["GROQ_API_KEY"]
             
-            # Limpar caches de grafos para forçar a renderização dos novos nós de Macrotema
-            calcular_sna_global.clear()
-            gerar_nodos_agraph.clear()
-            st.rerun()
+            with st.spinner("Analisando ecossistema de dados com NMF + Groq (Llama 3)..."):
+                st.session_state['dados_completos'] = aplicar_macrotemas(
+                    dados_completos, 
+                    api_key=minha_chave_groq
+                )
+                st.session_state['macrotemas_computados'] = True
+                
+                # Reseta caches para atualizar os grafos com os novos temas
+                calcular_sna_global.clear()
+                gerar_nodos_agraph.clear()
+                st.rerun()
+                
+        except KeyError:
+            st.error("❌ Erro: 'GROQ_API_KEY' não encontrada nos Secrets do Streamlit.")
+            st.info("💡 Certifique-se de que adicionou a chave no painel do Streamlit Cloud em 'Settings' -> 'Secrets'.")
+            
 else:
     # Exibir Tabela de Macrotemas
     todos_temas = [d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos]

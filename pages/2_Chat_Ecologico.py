@@ -3,6 +3,8 @@ import pandas as pd
 import json
 from groq import Groq
 
+MODELO_IA = "llama-3.3-70b-versatile"
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Chatbot Ecológico | PPGEGC",
@@ -91,9 +93,10 @@ if prompt := st.chat_input("Perquise a ecologia do conhecimento..."):
         message_placeholder = st.empty()
         full_response = ""
         
-        try:
+       try:
+            # ATUALIZADO: Mudamos de 'llama3-70b-8192' para 'llama-3.3-70b-versatile'
             completion = client.chat.completions.create(
-                model="llama3-70b-8192",
+                model=MODELO_IA, 
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]

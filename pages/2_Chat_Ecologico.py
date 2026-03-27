@@ -22,7 +22,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- CONFIGURAÇÃO AUTOMÁTICA DA API KEY ---
-# Tenta carregar dos Secrets do Streamlit. Se não encontrar, avisa o desenvolvedor.
 try:
     api_key = st.secrets["GROQ_API_KEY"]
 except Exception:
@@ -49,9 +48,11 @@ def processar_inteligencia_rede(dados):
     deg_cent = nx.degree_centrality(G)
     bet_cent = nx.betweenness_centrality(G)
 
+    # FUNÇÃO CORRIGIDA AQUI:
     def extrair_vips(tipo_filtro, metrica_dict, top_n=15):
         nós_filtro = [n for n, attr in G.nodes(data=True) if attr.get('tipo') == tipo_filtro]
-        sub_dict = {n: met_val for n, met_val in met_dict.items() if n in nós_filtro}
+        # metrica_dict agora está escrito corretamente:
+        sub_dict = {n: met_val for n, met_val in metrica_dict.items() if n in nós_filtro}
         top = sorted(sub_dict.items(), key=lambda x: x[1], reverse=True)[:top_n]
         return "\n".join([f"- {nome}: {valor:.4f}" for nome, valor in top])
 

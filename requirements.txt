@@ -8,3 +8,5 @@ wordcloud
 matplotlib
 groq
 streamlit-agraph
+numpy
+scipy

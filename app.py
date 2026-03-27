@@ -14,6 +14,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
 import re
 from groq import Groq
+import google.generativeai as genai
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -39,10 +40,12 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 def aplicar_macrotemas(dados, api_key, num_topicos=12):
-    client = Groq(api_key=api_key)
+    # 1. Configuração da API do Gemini
+    genai.configure(api_key=api_key)
+    # O modelo Flash é o mais rápido e eficiente para tarefas de classificação e texto
+    model = genai.GenerativeModel('gemini-1.5-flash') 
     
-    # 1. SUPER-LIMPEZA (Stopwords Cirúrgicas)
-    # Adicionamos termos que costumam "roubar" o lugar de conceitos reais
+    # 2. SUPER-LIMPEZA (Mantemos a mesma peneira rigorosa que construímos)
     sujeira_academica = [
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
@@ -50,23 +53,19 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
         "the", "of", "and", "in", "to", "for", "with", "on", "at", "by", "from", "an", "is", "it", "this", "that",
         "study", "analysis", "based", "using", "results", "work", "research", "paper", "thesis", "dissertation",
         "analise", "estudo", "desenvolvimento", "proposta", "metodo", "processo", "sistema", "modelo", "projeto",
-        "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação"
+        "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação",
+        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave"
     ]
 
     textos = []
     for doc in dados:
-        # Ponderação: Título tem mais peso que o resumo
+        # Peso Triplo para o Título + Keywords + Resumo
         bruto = f"{(doc.get('titulo', '') + ' ') * 3} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
         limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
         textos.append(limpo)
 
-    # 2. VETORIZAÇÃO E NMF (Matemática Pura)
-    vectorizer = TfidfVectorizer(
-        max_df=0.8, # Ignora o que aparece em mais de 80% dos textos
-        min_df=2, 
-        stop_words=sujeira_academica, 
-        max_features=800
-    )
+    # 3. VETORIZAÇÃO E NMF (Matemática Pura)
+    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=800)
     
     try:
         tfidf_matrix = vectorizer.fit_transform(textos)
@@ -74,54 +73,53 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
         nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
         feature_names = vectorizer.get_feature_names_out()
     except Exception as e:
-        st.error(f"Erro na vetorização: {e}")
+        st.error(f"Erro na vetorização (amostra pode ser muito pequena ou similar): {e}")
         return dados
 
-    # Montar contexto para o LLM
+    # Montar contexto para o Gemini
     clusters = []
     for idx, topic in enumerate(nmf_model.components_):
         top_words = [feature_names[i] for i in topic.argsort()[:-8:-1]]
-        clusters.append(f"Área {idx+1}: {', '.join(top_words)}")
+        clusters.append(f"Grupo {idx+1}: {', '.join(top_words)}")
     
     contexto = "\n".join(clusters)
 
-    # 3. LLM (O Cérebro) - Mudamos para o modelo 70b padrão, mais estável
-    prompt_humanizado = f"""Você é um Curador Acadêmico Interdisciplinar da UFSC.
-Recebi {num_topicos} grupos de conceitos técnicos de teses e dissertações programas de pós-graduação.
-Crie títulos acadêmicos, científicos, técnicos curtos (3-4 palavras) e profissionais para cada grupo.
+    # 4. Prompt para o Gemini (Focado em rigor acadêmico e síntese transdisciplinar)
+    prompt_humanizado = f"""Você é um especialista em epistemologia e taxonomia acadêmica.
+Abaixo estão {num_topicos} grupos de palavras-chave extraídas de agrupamentos matemáticos (NMF) de teses e dissertações.
+Sua missão é batizar cada grupo com um nome definitivo e que represente com precisão essa subárea do conhecimento.
 
-Exemplo de tom desejado: 
-- 'Dinâmica de Fluidos e Turbulência' (em vez de 'Área de Calor')
-- 'Integridade Estrutural e Fadiga' (em vez de 'Área de Tensões')
+Diretrizes rigorosas:
+- Crie títulos com no máximo 4 palavras.
+- NÃO use palavras genéricas como 'Estudo', 'Análise', 'Área de', 'Aplicações', 'Correlatas'.
+- Vá direto ao ponto. Exemplo: Se ler 'soldagem, laser, liga, tensão', responda 'Tecnologias de Soldagem' ou 'Metalurgia e Soldagem a Laser'.
+- Retorne APENAS uma lista estritamente numerada de 1 a {num_topicos}, sem introduções ou conclusões.
 
-GRUPOS DE CONCEITOS:
-{contexto}
-
-Responda APENAS com a lista numerada dos títulos, um por linha."""
+GRUPOS DE PALAVRAS:
+{contexto}"""
 
     try:
-        completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt_humanizado}],
-            model="llama3-70b-8192", # Modelo altamente estável no Groq
-            temperature=0.4
-        )
-        respostas = completion.choices[0].message.content.strip().split('\n')
-        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip() for r in respostas if len(r) > 5]
+        # Chamada à API do Gemini
+        response = model.generate_content(prompt_humanizado)
+        texto_resposta = response.text.strip()
+        
+        # Limpeza da lista retornada
+        respostas = texto_resposta.split('\n')
+        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
         
         # Validação de segurança
         if len(nomes_finais) < num_topicos:
-            raise ValueError("Resposta incompleta do LLM")
+            raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes. Esperados: {num_topicos}")
 
     except Exception as e:
-        # Se falhar, o novo Plano B é mais inteligente
-        st.warning(f"Aviso: Usando nomenclatura simplificada (API indisponível: {e})")
+        # Novo Plano B elegante caso falte internet ou a API caia
+        st.warning(f"Aviso da IA: Usando extração direta de termos (Erro: {e})")
         nomes_finais = []
         for c in clusters:
             palavras = c.split(': ')[1].split(', ')
-            # Pega as duas primeiras palavras reais e monta um título digno
             nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
 
-    # 4. ATRIBUIÇÃO
+    # 5. ATRIBUIÇÃO DOS RÓTULOS AOS DOCUMENTOS
     for i, doc in enumerate(dados):
         top_idx = nmf_matrix[i].argmax()
         doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
@@ -349,24 +347,17 @@ if not st.session_state['macrotemas_computados']:
     st.info("Os documentos extraídos ainda não possuem categorização temática.")
     
     if st.button("Computar Macrotemas Agora", type="primary"):
-        # Tenta recuperar a chave dos Secrets do Streamlit
         try:
-            minha_chave_groq = st.secrets["GROQ_API_KEY"]
+            # Puxa a chave do Gemini em vez do Groq
+            minha_chave_gemini = st.secrets["GEMINI_API_KEY"]
             
-            with st.spinner("Analisando ecossistema de dados com NMF + Groq (Llama 3)..."):
+            with st.spinner("Analisando ecossistema de dados com NMF e IA do Google Gemini..."):
                 st.session_state['dados_completos'] = aplicar_macrotemas(
                     dados_completos, 
-                    api_key=minha_chave_groq
-                )
-                st.session_state['macrotemas_computados'] = True
-                
-                # Reseta caches para atualizar os grafos com os novos temas
-                calcular_sna_global.clear()
-                gerar_nodos_agraph.clear()
-                st.rerun()
-                
+                    api_key=minha_chave_gemini
+                )                
         except KeyError:
-            st.error("❌ Erro: 'GROQ_API_KEY' não encontrada nos Secrets do Streamlit.")
+            st.error("❌ Erro: 'API_KEY' não encontrada nos Secrets do Streamlit.")
             st.info("💡 Certifique-se de que adicionou a chave no painel do Streamlit Cloud em 'Settings' -> 'Secrets'.")
             
 else:

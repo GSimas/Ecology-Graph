@@ -570,8 +570,7 @@ for d in dados_completos:
     for kw in d.get('palavras_chave', []): keywords_set.add(kw)
 
 # --- RENDERIZAÇÃO DO CABEÇALHO ---
-st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
-st.markdown("Plataforma de inteligência bibliométrica para mapeamento de redes académicas, evolução histórica e análise topológica estrutural do conhecimento.")
+st.markdown("Plataforma de inteligência bibliométrica para mapeamento de redes acadêmicas, evolução histórica e análise topológica estrutural do conhecimento.")
 
 # Linha 1 de Cards
 c1, c2, c3 = st.columns(3)

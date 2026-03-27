@@ -38,13 +38,9 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 def aplicar_macrotemas(dados, api_key, num_topicos=12):
-    # 1. Configuração da API
     genai.configure(api_key=api_key)
-    
-    # Apontando para o modelo exato detectado no seu log de erro
     model = genai.GenerativeModel('gemini-2.5-flash') 
     
-    # 2. SUPER-LIMPEZA (Mantemos a mesma peneira rigorosa que construímos)
     sujeira_academica = [
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
@@ -58,12 +54,10 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
 
     textos = []
     for doc in dados:
-        # Peso Triplo para o Título + Keywords + Resumo
         bruto = f"{(doc.get('titulo', '') + ' ') * 3} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
         limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
         textos.append(limpo)
 
-    # 3. VETORIZAÇÃO E NMF (Matemática Pura)
     vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=800)
     
     try:
@@ -72,10 +66,9 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
         nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
         feature_names = vectorizer.get_feature_names_out()
     except Exception as e:
-        st.error(f"Erro na vetorização (amostra pode ser muito pequena ou similar): {e}")
+        st.error(f"Erro na vetorização: {e}")
         return dados
 
-    # Montar contexto para o Gemini
     clusters = []
     for idx, topic in enumerate(nmf_model.components_):
         top_words = [feature_names[i] for i in topic.argsort()[:-8:-1]]
@@ -83,7 +76,6 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
     
     contexto = "\n".join(clusters)
 
-    # 4. Prompt para o Gemini (Focado em rigor acadêmico e síntese transdisciplinar)
     prompt_humanizado = f"""Você é um especialista em epistemologia e taxonomia acadêmica.
 Abaixo estão {num_topicos} grupos de palavras-chave extraídas de agrupamentos matemáticos (NMF) de teses e dissertações.
 Sua missão é batizar cada grupo com um nome definitivo e que represente com precisão essa subárea do conhecimento.
@@ -91,13 +83,12 @@ Sua missão é batizar cada grupo com um nome definitivo e que represente com pr
 Diretrizes rigorosas:
 - Crie títulos com no máximo 4 palavras.
 - NÃO use palavras genéricas como 'Estudo', 'Análise', 'Área de', 'Aplicações', 'Correlatas'.
-- Vá direto ao ponto. Exemplo: Se ler 'soldagem, laser, liga, tensão', responda 'Tecnologias de Soldagem' ou 'Metalurgia e Soldagem a Laser'.
+- Vá direto ao ponto. Exemplo: Se ler 'soldagem, laser, liga, tensão', responda 'Tecnologias de Soldagem'.
 - Retorne APENAS uma lista estritamente numerada de 1 a {num_topicos}, sem introduções ou conclusões.
 
 GRUPOS DE PALAVRAS:
 {contexto}"""
 
-    # 5. Geração e Tratamento
     try:
         response = model.generate_content(
             prompt_humanizado,
@@ -107,24 +98,19 @@ GRUPOS DE PALAVRAS:
             )
         )
         texto_resposta = response.text.strip()
-        
-        # Limpeza da lista retornada
         respostas = texto_resposta.split('\n')
         nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
         
-        # Validação de segurança
         if len(nomes_finais) < num_topicos:
-            raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes. Esperados: {num_topicos}")
+            raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes.")
 
     except Exception as e:
         st.error(f"Erro na API Gemini: {e}")
-        # Plano B (Extração direta)
         nomes_finais = []
         for c in clusters:
             palavras = c.split(': ')[1].split(', ')
             nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
 
-    # 6. ATRIBUIÇÃO DOS RÓTULOS AOS DOCUMENTOS
     for i, doc in enumerate(dados):
         top_idx = nmf_matrix[i].argmax()
         doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
@@ -217,8 +203,6 @@ def calcular_sna_global(dados):
         ori = d.get('orientador')
         if ori: G.add_node(ori, tipo='Orientador'); G.add_edge(doc, ori)
         for pk in d.get('palavras_chave', []): G.add_node(pk, tipo='Palavra-chave'); G.add_edge(doc, pk)
-        
-        # Injeção do Macrotema no Grafo
         mt = d.get('macrotema')
         if mt: G.add_node(mt, tipo='Macrotema'); G.add_edge(doc, mt)
 
@@ -266,7 +250,6 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
             else:
                 tam = 15
                 
-        # Estilização estendida para incluir Macrotema
         cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Palavra-chave' else '#9B59B6' if tipo == 'Macrotema' else '#95A5A6')
         formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Palavra-chave' else 'hexagon' if tipo == 'Macrotema' else 'dot')
         
@@ -281,6 +264,47 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
         edges.append(Edge(source=u, target=v, color="#7F8C8D", width=1.0))
 
     return nodes, edges
+
+# --- FUNÇÃO AUXILIAR PARA DOSSIÊ ---
+def gerar_tabela_macrotemas_perfil(docs):
+    """Gera uma tabela consolidando os macrotemas de uma lista de documentos (por Orientador, Autor, etc.)"""
+    if not st.session_state.get('macrotemas_computados'):
+        return
+        
+    tabela = []
+    for d in docs:
+        mt = d.get('macrotema', 'Multidisciplinar / Transversal')
+        nivel = d.get('nivel_academico', 'Outros')
+        tabela.append({'Macrotema': mt, 'Nível': nivel})
+        
+    if not tabela:
+        return
+        
+    df = pd.DataFrame(tabela)
+    # Tabela dinâmica contando a ocorrência de níveis por macrotema
+    resumo = pd.crosstab(df['Macrotema'], df['Nível']).reset_index()
+    
+    # Garante as colunas básicas caso não existam na amostra deste perfil
+    if 'Tese (Doutorado)' not in resumo.columns: resumo['Tese (Doutorado)'] = 0
+    if 'Dissertação (Mestrado)' not in resumo.columns: resumo['Dissertação (Mestrado)'] = 0
+    if 'Outros' not in resumo.columns: resumo['Outros'] = 0
+    
+    # Renomeando para exibição limpa
+    resumo = resumo.rename(columns={
+        'Tese (Doutorado)': 'Teses',
+        'Dissertação (Mestrado)': 'Dissertações'
+    })
+    
+    # Calcula coluna Total
+    resumo['Total'] = resumo['Teses'] + resumo['Dissertações'] + resumo['Outros']
+    
+    # Reordenando para foco nos maiores
+    resumo = resumo[['Macrotema', 'Teses', 'Dissertações', 'Outros', 'Total']].sort_values(by='Total', ascending=False)
+    
+    st.write("**📊 Frequência Temática deste Perfil:**")
+    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
 
 # --- INTERFACE DE EXTRAÇÃO ---
 if 'dados_completos' not in st.session_state:
@@ -353,9 +377,7 @@ if not st.session_state['macrotemas_computados']:
     
     if st.button("Computar Macrotemas Agora", type="primary"):
         try:
-            # Puxa a chave do Gemini em vez do Groq
             minha_chave_gemini = st.secrets["GEMINI_API_KEY"]
-            
             with st.spinner("Analisando ecossistema de dados com NMF e IA do Google Gemini..."):
                 st.session_state['dados_completos'] = aplicar_macrotemas(
                     dados_completos, 
@@ -372,7 +394,6 @@ if not st.session_state['macrotemas_computados']:
             st.info("💡 Certifique-se de que adicionou a chave no painel do Streamlit Cloud em 'Settings' -> 'Secrets'.")
             
 else:
-    # Exibir Tabela de Macrotemas
     todos_temas = [d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos]
     contagem_temas = Counter(todos_temas)
     df_temas = pd.DataFrame(contagem_temas.items(), columns=["Macrotema", "Quantidade de Documentos"]).sort_values(by="Quantidade de Documentos", ascending=False)
@@ -388,14 +409,12 @@ st.header("🔍 Motor de Busca e Dossiê")
 
 sna_global = calcular_sna_global(dados_completos)
 
-# Define as opções de busca baseadas no estado da aplicação
 opcoes_busca = ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"]
 if st.session_state['macrotemas_computados']:
     opcoes_busca.append("Macrotema")
 
 tipo_busca = st.radio("Procurar por Entidade:", opcoes_busca, horizontal=True, key="busca_tipo")
 
-# Prepara a lista de opções para o Selectbox
 if tipo_busca == "Documento": opcoes = [d['titulo'] for d in dados_completos]
 elif tipo_busca == "Autor": opcoes = list(autores_set)
 elif tipo_busca == "Orientador": opcoes = list(orientadores_set)
@@ -425,7 +444,6 @@ if termo_ativo:
             if doc.get('url'):
                 st.markdown(f"🔗 **Link Oficial na UFSC:** [{doc['url']}]({doc['url']})")
                 
-            # TAG do Macrotema clicável
             if st.session_state['macrotemas_computados']:
                 tema = doc.get('macrotema', 'Multidisciplinar / Transversal')
                 st.write("**Macrotema Classificado:**")
@@ -448,17 +466,31 @@ if termo_ativo:
                 
         elif tipo_busca == "Autor":
             docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
-            for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
+            st.write(f"**Documentos Escritos ({len(docs)}):**")
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_aut_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            
         elif tipo_busca == "Orientador":
             docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
-            for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
+            gerar_tabela_macrotemas_perfil(docs)
+            st.write(f"**Documentos Orientados ({len(docs)}):**")
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_ori_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            
+        elif tipo_busca == "Co-orientador":
+            docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+            gerar_tabela_macrotemas_perfil(docs)
+            st.write(f"**Documentos Co-orientados ({len(docs)}):**")
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_co_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            
         elif tipo_busca == "Palavra-chave":
             docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
-            for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
+            gerar_tabela_macrotemas_perfil(docs)
+            st.write(f"**Documentos Associados ({len(docs)}):**")
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_pk_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            
         elif tipo_busca == "Macrotema":
             docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
             st.write(f"**Documentos encontrados na categoria ({len(docs)}):**")
-            for d in docs: st.button(f"📄 {d['titulo']}", key=f"btn_mt_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
 
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})

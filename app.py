@@ -10,6 +10,8 @@ import re
 import unicodedata
 from sickle import Sickle
 from sickle.oaiexceptions import NoRecordsMatch
+import numpy as np
+import scipy
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -175,6 +177,68 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
 
     return nodes, edges
 
+
+import numpy as np
+
+@st.cache_data
+def calcular_metricas_complexas(dados):
+    """Calcula indicadores de ecologia profunda e topologia avançada."""
+    G = nx.Graph()
+    for d in dados:
+        doc = d.get('titulo')
+        if not doc: continue
+        G.add_node(doc, tipo='Documento')
+        for a in d.get('autores', []): G.add_edge(doc, a)
+        ori = d.get('orientador')
+        if ori: G.add_edge(doc, ori)
+        for pk in d.get('palavras_chave', []): G.add_edge(doc, pk)
+
+    if G.number_of_nodes() == 0: return {}
+
+    # --- MÉTRICAS GLOBAIS ---
+    densidade = nx.density(G)
+    
+    # Graus (Links por nó)
+    graus = [d for n, d in G.degree()]
+    links_stats = {
+        'media': np.mean(graus),
+        'min': np.min(graus),
+        'max': np.max(graus),
+        'std': np.std(graus)
+    }
+
+    # Eficiência e Redundância
+    eficiencia = nx.global_efficiency(G)
+    redundancia = 1 - eficiencia # Simplificação teórica comum
+
+    # Entropia da Rede (Baseada na distribuição de graus)
+    pk = np.array(nx.degree_histogram(G))
+    pk = pk / pk.sum()
+    pk = pk[pk > 0]
+    entropia = -np.sum(pk * np.log2(pk))
+
+    # Coeficiente de Agrupamento Médio (Clustering)
+    clustering = nx.average_clustering(G)
+
+    # --- MÉTRICAS DE NÓ (MÉDIAS GLOBAIS) ---
+    # Para métricas que geram dicts, calculamos a média para o Dashboard
+    pagerank_dict = nx.pagerank(G)
+    eigen_dict = nx.eigenvector_centrality(G, max_iter=1000, weight=None)
+    constraint_dict = nx.constraint(G) # Restrição de Burt
+
+    return {
+        'densidade': densidade,
+        'links': links_stats,
+        'eficiencia': eficiencia,
+        'redundancia': redundancia,
+        'entropia': entropia,
+        'clustering': clustering,
+        'pagerank_avg': np.mean(list(pagerank_dict.values())),
+        'eigen_avg': np.mean(list(eigen_dict.values())),
+        'constraint_avg': np.mean(list(constraint_dict.values())),
+        'n_nos': G.number_of_nodes()
+    }
+
 # --- INTERFACE E EXTRAÇÃO ---
 if 'dados_completos' not in st.session_state:
     st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
@@ -232,6 +296,31 @@ c6.metric("🤝 Co-orientadores", len(coorientadores_set))
 c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 
 st.markdown("---")
+
+# --- SEÇÃO: MÉTRICAS DE ECOLOGIA PROFUNDA ---
+st.markdown("### 🧬 Métricas de Ecologia Profunda (SNA Avançado)")
+m_sna = calcular_metricas_complexas(dados_completos)
+
+if m_sna:
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    col_s1.metric("Densidade da Rede", f"{m_sna['densidade']:.5f}")
+    col_s2.metric("Eficiência Global", f"{m_sna['eficiencia']:.4f}")
+    col_s3.metric("Entropia (H)", f"{m_sna['entropia']:.2f} bits")
+    col_s4.metric("Clustering Médio", f"{m_sna['clustering']:.4f}")
+
+    with st.expander("📊 Estatísticas de Conectividade (Links por Nó)"):
+        c_l1, c_l2, c_l3, c_l4 = st.columns(4)
+        c_l1.metric("Média de Links", f"{m_sna['links']['media']:.2f}")
+        c_l2.metric("Desvio Padrão", f"{m_sna['links']['std']:.2f}")
+        c_l3.metric("Mínimo", m_sna['links']['min'])
+        c_l4.metric("Máximo", m_sna['links']['max'])
+
+    with st.expander("🧠 Indicadores de Influência e Estrutura (Médias)"):
+        c_i1, c_i2, c_i3, c_i4 = st.columns(4)
+        c_i1.metric("PageRank Médio", f"{m_sna['pagerank_avg']:.6f}")
+        c_i2.metric("Eigenvector Médio", f"{m_sna['eigen_avg']:.6f}")
+        c_i3.metric("Restrição (Burt)", f"{m_sna['constraint_avg']:.4f}")
+        c_i4.metric("Redundância", f"{m_sna['redundancia']:.4f}")
 
 # --- MOTOR DE BUSCA (EGO-GRAPH) ---
 st.header("🔍 Motor de Busca e Dossiê (Search Engine)")
@@ -317,3 +406,22 @@ if termo_ativo:
                 st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
         else:
             st.warning("Não foi possível gerar a órbita visual para este termo.")
+
+# --- GLOSSÁRIO TÉCNICO ---
+st.markdown("---")
+with st.expander("📚 Glossário de Métricas de Ecologia do Conhecimento"):
+    st.markdown("""
+    ### Topologia e Fluxo
+    * **Densidade:** Proporção de conexões reais frente às possíveis. $D = \\frac{2|E|}{|V|(|V|-1)}$. Indica quão "povoada" está a rede.
+    * **Eficiência:** Mede quão fácil a informação viaja. Redes eficientes têm caminhos curtos entre quaisquer dois nós.
+    * **Entropia da Rede ($H$):** Mede a diversidade e incerteza da distribuição de conexões. Uma entropia alta indica uma ecologia complexa e menos previsível.
+    
+    ### Centralidade e Poder
+    * **PageRank:** Algoritmo do Google que mede a importância de um nó baseando-se na qualidade das suas conexões (não apenas quantidade).
+    * **Eigenvector:** Mede a influência de um nó considerando que conexões com nós influentes valem mais.
+    * **Restrição (Burt's Constraint):** Mede quanto um indivíduo está "preso" a um grupo. Baixa restrição indica um *Broker* (ponte entre diferentes saberes).
+    
+    ### Estrutura de Agrupamento
+    * **Coeficiente de Agrupamento (Clustering):** Mede a probabilidade de dois vizinhos de um nó também estarem conectados entre si (formação de "bolhas" ou grupos coesos).
+    * **Redundância:** Indica o excesso de caminhos para a mesma informação. É o inverso da eficiência na otimização de fluxos.
+    """)

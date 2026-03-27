@@ -11,6 +11,7 @@ from collections import Counter
 import itertools
 import unicodedata
 from sickle import Sickle
+from sickle.oaiexceptions import NoRecordsMatch
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -114,21 +115,43 @@ def identificar_nivel(tipos, titulo=""):
     if 'master' in tipos_str or 'disserta' in tipos_str or 'disserta' in titulo_lower: return 'Dissertação (Mestrado)'
     return 'Outros'
 
+from sickle.oaiexceptions import NoRecordsMatch
+
 def realizar_extracao(set_spec, status_placeholder):
-    sickle = Sickle('https://repositorio.ufsc.br/oai/request')
-    try: records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
-    except: return []
+    """Realiza a extração massiva com proteção contra timeouts e quebras de paginação."""
+    # Adicionamos um timeout longo (60s) para dar tempo ao servidor da UFSC de responder
+    sickle = Sickle('https://repositorio.ufsc.br/oai/request', timeout=60)
+    
+    try: 
+        records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
+    except NoRecordsMatch:
+        status_placeholder.error("⚠️ Esta coleção existe no catálogo da UFSC, mas está vazia ou os documentos não estão no formato padrão.")
+        return []
+    except Exception as e:
+        status_placeholder.error(f"⚠️ Erro de comunicação com o servidor da UFSC: {e}")
+        return []
 
     dados_extraidos = []
     titulos_vistos = set()
-
-    for i, record in enumerate(records):
-        if i % 50 == 0:
-            status_placeholder.info(f"⏳ A extrair dados do servidor da UFSC... Documentos processados: **{i}**")
-
-        if record.header.deleted or not record.metadata: continue
-            
+    
+    # Iterador manual: Protege a aplicação caso a página 2 ou 3 do servidor falhe
+    iterator = iter(records)
+    i = 0
+    
+    while True:
         try:
+            # Tenta puxar o próximo documento (ou a próxima página do servidor)
+            record = next(iterator)
+            i += 1
+            
+            # Feedback visual para o utilizador não achar que travou
+            if i % 50 == 0:
+                status_placeholder.info(f"⏳ A fazer o download pacotes do servidor... Documentos processados: **{i}**")
+
+            # Proteção contra registos deletados ou sem metadados
+            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: 
+                continue
+                
             meta = record.metadata
             titulo = meta.get('title', [''])[0].strip()
             if not titulo or titulo in titulos_vistos: continue
@@ -149,9 +172,20 @@ def realizar_extracao(set_spec, status_placeholder):
                 'orientador': orientador, 'co_orientadores': co_orientadores,
                 'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 'ano': ano_real
             })
-        except: continue
+            
+        except StopIteration:
+            # O servidor informou que não há mais documentos (Fim normal)
+            break 
+        except Exception as e:
+            # O servidor travou a meio da extração (Erro de Paginação ou XML corrompido)
+            st.warning(f"⚠️ A extração foi interrompida antecipadamente pelo servidor da UFSC após o documento {i}. O sistema salvou o que conseguiu capturar com sucesso.")
+            break 
 
-    status_placeholder.success(f"✅ Extração concluída! {len(dados_extraidos)} documentos capturados.")
+    if dados_extraidos:
+        status_placeholder.success(f"✅ Extração finalizada! {len(dados_extraidos)} documentos válidos capturados.")
+    else:
+        status_placeholder.error("⚠️ Nenhum documento válido foi extraído.")
+        
     return dados_extraidos
 
 # (MANTENHA AS FUNÇÕES `obter_dataframe_metricas`, `preparar_dados_base_df`, `preparar_csv_exportacao`, `gerar_html_pyvis`, `gerar_html_coocorrencia` etc. EXATAMENTE COMO ESTÃO)

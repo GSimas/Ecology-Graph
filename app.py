@@ -298,12 +298,12 @@ else:
         c3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
         c4.info("Dica: Clique num nó para isolá-lo.")
         
-        # Desenha a Lenda Dinâmica se houver Comunidades
-        if kpis['legendas']:
+     # Desenha a Lenda Dinâmica se houver Comunidades
+        if kpis.get('legendas'): # Usando .get() para evitar KeyError
             st.markdown("#### 🎨 Comunidades Identificadas")
             html_legend = "<div style='background-color:#2C3E50; padding:10px; border-radius:5px; margin-bottom:15px; display:flex; flex-wrap:wrap;'>"
             # Ordena por tamanho para mostrar as maiores comunidades primeiro
-            lendas_ordenadas = sorted(kpis['legendas'], key=lambda x: x['tamanho'], reverse=True)
+            lendas_ordenadas = sorted(kpis.get('legendas', []), key=lambda x: x['tamanho'], reverse=True)
             for leg in lendas_ordenadas:
                 html_legend += f"<div style='margin-right:20px; margin-bottom:5px; align-items:center;'><span style='display:inline-block; width:15px; height:15px; background-color:{leg['cor']}; border-radius:50%; vertical-align:middle; margin-right:5px;'></span><b>Comunidade {leg['id']}</b> ({leg['tamanho']} nós)</div>"
             html_legend += "</div>"

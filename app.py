@@ -73,7 +73,7 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 @st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
 def obter_programas_ufsc():
-    """Conecta ao repositório da UFSC e lista apenas os Programas de Pós-Graduação."""
+    """Conecta ao repositório da UFSC e lista apenas os Programas de Pós-Graduação, evitando colisões de nomes iguais."""
     try:
         sickle = Sickle('https://repositorio.ufsc.br/oai/request')
         sets = sickle.ListSets()
@@ -81,14 +81,21 @@ def obter_programas_ufsc():
         
         for s in sets:
             if s.setSpec.startswith('col_'):
-                # Normaliza o nome (remove acentos e passa para minúsculas) para a verificação ser infalível
                 nome_norm = ''.join(c for c in unicodedata.normalize('NFD', s.setName.lower()) if unicodedata.category(c) != 'Mn')
                 
-                # Filtro Lexical: Retém apenas coleções que sejam inequivocamente de Pós-Graduação
+                # Filtro Lexical
                 if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm or "teses e dissertacoes" in nome_norm:
-                    # Limpa o nome original caso tenha algum prefixo indesejado para ficar mais bonito no menu
+                    # Limpa o prefixo padrão
                     nome_exibicao = s.setName.replace("Teses e Dissertações - ", "").strip()
-                    colecoes[nome_exibicao] = s.setSpec
+                    
+                    # --- A MÁGICA ACONTECE AQUI ---
+                    # Extraímos o número final do Handle (ex: 75141)
+                    id_handle = s.setSpec.split('_')[-1]
+                    
+                    # Anexamos o ID ao nome. Isto torna a chave única e impede a sobreposição!
+                    nome_completo = f"{nome_exibicao} (ID: {id_handle})"
+                    
+                    colecoes[nome_completo] = s.setSpec
                     
         return dict(sorted(colecoes.items()))
     except Exception as e:
@@ -505,7 +512,7 @@ if 'dados_completos' not in st.session_state:
                     url_repositorio = "https://repositorio.ufsc.br/"
                 
                 # Cria um card de informação elegante
-                st.info(f"**{prog}**\n\n🔗 [Aceder à página original na UFSC]({url_repositorio}) | 🪪 ID Interno OAI: `{set_spec}`")
+                st.info(f"**{prog}**\n\n🔗 [Acessar a página original na UFSC]({url_repositorio}) | 🪪 ID Interno OAI: `{set_spec}`")
         
         # 3. O FORMULÁRIO AGORA CONTROLA APENAS O BOTÃO DE EXTRAÇÃO
         with st.form("form_extracao"):
@@ -536,7 +543,7 @@ if 'dados_completos' not in st.session_state:
                         
                     st.rerun() 
     else:
-        st.error("Não foi possível aceder à lista da UFSC neste momento.")
+        st.error("Não foi possível acessar a lista da UFSC neste momento.")
     st.stop()
 
 
@@ -754,7 +761,7 @@ st.markdown("---")
 
 # === SEÇÃO 1: GRAFO INTERATIVO GERAL ===
 st.header("🕸️ 1. Topologia e Grafo Interativo")
-niveis_sel_grafo = st.multiselect("Nível Académico (Grafo):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_grafo")
+niveis_sel_grafo = st.multiselect("Nível Acadêmico (Grafo):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_grafo")
 dados_grafo = [d for d in dados_completos if d.get('nivel_academico', 'Outros') in niveis_sel_grafo]
 total_grafo = len(dados_grafo)
 
@@ -806,7 +813,7 @@ st.header("🏆 2. Análise Estrutural e Rankings (SNA)")
 with st.form("form_tabela"):
     col_t_filt1, col_t_filt2, col_t_filt3 = st.columns(3)
     with col_t_filt1:
-        niveis_sel_tabela = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_tabela")
+        niveis_sel_tabela = st.multiselect("Nível Acadêmico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_tabela")
     with col_t_filt2:
         anos_sel_tabela = st.slider("Filtrar por Período (Ano):", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_tab")
     with col_t_filt3:
@@ -867,7 +874,7 @@ df_geral_base = preparar_dados_base_df(dados_completos)
 with st.form("form_historico"):
     col_h_filt1, col_h_filt2, col_h_filt3 = st.columns(3)
     with col_h_filt1:
-        niveis_sel_hist = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_hist")
+        niveis_sel_hist = st.multiselect("Nível Acadêmico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_hist")
     with col_h_filt2:
         orientador_sel_hist = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para todos.")
     with col_h_filt3:
@@ -935,7 +942,7 @@ st.header("☁️ 4. Lexicometria e Nuvem de Palavras")
 with st.form("form_nuvem"):
     col_n_filt1, col_n_filt2, col_n_filt3 = st.columns(3)
     with col_n_filt1:
-        niveis_sel_nuvem = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_nuvem")
+        niveis_sel_nuvem = st.multiselect("Nível Acadêmico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_nuvem")
     with col_n_filt2:
         orientador_sel_nuvem = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para considerar todos.")
     with col_n_filt3:
@@ -973,7 +980,7 @@ st.write("Analise como os conceitos e palavras-chave se relacionam dentro das te
 with st.form("form_coocorrencia"):
     col_c_filt1, col_c_filt2, col_c_filt3 = st.columns(3)
     with col_c_filt1:
-        niveis_sel_co = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_co")
+        niveis_sel_co = st.multiselect("Nível Acadêmico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_co")
     with col_c_filt2:
         orientador_sel_co = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para todos.")
     with col_c_filt3:

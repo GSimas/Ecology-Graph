@@ -175,6 +175,54 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
 
     return dados_extraidos
 
+@st.cache_data
+def calcular_sna_global(dados):
+    """Calcula as métricas SNA de toda a base de uma só vez para o Motor de Busca."""
+    G = nx.Graph()
+    for d in dados:
+        doc = d.get('titulo')
+        if not doc: continue
+        G.add_node(doc, tipo='Documento')
+        for a in d.get('autores', []):
+            G.add_node(a, tipo='Autor')
+            G.add_edge(doc, a)
+        ori = d.get('orientador')
+        if ori:
+            G.add_node(ori, tipo='Orientador')
+            G.add_edge(doc, ori)
+        for co in d.get('co_orientadores', []):
+            G.add_node(co, tipo='Co-orientador')
+            G.add_edge(doc, co)
+        for pk in d.get('palavras_chave', []):
+            G.add_node(pk, tipo='Palavra-chave')
+            G.add_edge(doc, pk)
+
+    deg_cent = nx.degree_centrality(G)
+    bet_cent = nx.betweenness_centrality(G)
+    grau_abs = dict(G.degree())
+    
+    # Detecção de Comunidades (Louvain)
+    try:
+        comunidades = nx_comm.louvain_communities(G)
+        mapa_comunidades = {node: i+1 for i, comm in enumerate(comunidades) for node in comm}
+    except:
+        mapa_comunidades = {}
+
+    # Ranking Geral de Betweenness (Poder de Ponte)
+    nodes_sorted_bet = sorted(bet_cent.items(), key=lambda x: x[1], reverse=True)
+    rank_bet = {node: rank+1 for rank, (node, _) in enumerate(nodes_sorted_bet)}
+
+    sna_dict = {}
+    for node in G.nodes():
+        sna_dict[node] = {
+            'Grau Absoluto': grau_abs.get(node, 0),
+            'Degree Centrality': deg_cent.get(node, 0),
+            'Betweenness': bet_cent.get(node, 0),
+            'Comunidade': mapa_comunidades.get(node, 'N/A'),
+            'Ranking Global': rank_bet.get(node, 'N/A')
+        }
+    return sna_dict
+
 # (MANTENHA AS FUNÇÕES `obter_dataframe_metricas`, `preparar_dados_base_df`, `preparar_csv_exportacao`, `gerar_html_pyvis`, `gerar_html_coocorrencia` etc. EXATAMENTE COMO ESTÃO)
 
 
@@ -527,6 +575,98 @@ c4.metric("✍️ Autores Únicos", len(autores_set))
 c5.metric("🏫 Orientadores", len(orientadores_set))
 c6.metric("🤝 Co-orientadores", len(coorientadores_set))
 c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
+
+st.markdown("---")
+
+
+# === MOTOR DE BUSCA (SEARCH ENGINE) ===
+st.header("🔍 Motor de Busca e Dossiê (Search Engine)")
+st.markdown("Pesquise qualquer entidade na base para ver o seu raio-x completo e posição na rede de conhecimento.")
+
+# Calcula a inteligência da rede em background
+sna_global = calcular_sna_global(dados_completos)
+
+tipo_busca = st.radio("O que deseja procurar?", ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"], horizontal=True)
+
+# Popula as opções com base na escolha
+opcoes_busca = []
+if tipo_busca == "Documento": opcoes_busca = [d['titulo'] for d in dados_completos]
+elif tipo_busca == "Autor": opcoes_busca = list(autores_set)
+elif tipo_busca == "Orientador": opcoes_busca = list(orientadores_set)
+elif tipo_busca == "Co-orientador": opcoes_busca = list(coorientadores_set)
+elif tipo_busca == "Palavra-chave": opcoes_busca = list(keywords_set)
+
+# A caixa de pesquisa mágica (autocomplete)
+termo_busca = st.selectbox(f"Digite o nome do(a) {tipo_busca.lower()}:", sorted(opcoes_busca), index=None, placeholder=f"Escreva aqui para pesquisar...")
+
+if termo_busca:
+    st.markdown("### 📑 Resultado da Análise")
+    col_info, col_sna = st.columns([2, 1])
+    
+    with col_info:
+        st.markdown(f"#### Detalhamento: {tipo_busca}")
+        st.markdown(f"**{termo_busca}**")
+        st.markdown("---")
+        
+        # Lógica de exibição dependendo do tipo
+        if tipo_busca == "Documento":
+            doc = next((d for d in dados_completos if d['titulo'] == termo_busca), None)
+            if doc:
+                st.write(f"**Ano da Defesa:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')}")
+                st.write(f"**Programa de Origem:** {doc.get('programa_origem', 'N/A')}")
+                st.write(f"**Autor(es):** {', '.join(doc.get('autores', []))}")
+                st.write(f"**Orientador:** {doc.get('orientador', 'N/A')}")
+                if doc.get('possui_coorientador'):
+                    st.write(f"**Co-orientador(es):** {', '.join(doc.get('co_orientadores', []))}")
+                st.write(f"**Palavras-chave:** {', '.join(doc.get('palavras_chave', []))}")
+                with st.expander("Ler Resumo (Abstract)"):
+                    st.write(doc.get('resumo', 'Resumo não disponível.'))
+                    
+        elif tipo_busca == "Autor":
+            docs = [d for d in dados_completos if termo_busca in d.get('autores', [])]
+            oris = set([d.get('orientador') for d in docs if d.get('orientador')])
+            co_oris = set([co for d in docs for co in d.get('co_orientadores', [])])
+            st.write(f"**Orientadores que teve:** {', '.join(oris) if oris else 'Nenhum'}")
+            st.write(f"**Co-orientadores:** {', '.join(co_oris) if co_oris else 'Nenhum'}")
+            st.write(f"**Documentos de Autoria ({len(docs)}):**")
+            for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+            
+        elif tipo_busca == "Orientador":
+            docs = [d for d in dados_completos if d.get('orientador') == termo_busca]
+            pupilos = set([a for d in docs for a in d.get('autores', [])])
+            st.write(f"**Volume de Orientações:** {len(docs)} trabalhos")
+            st.write(f"**Pupilos (Autores orientados):** {', '.join(pupilos)}")
+            with st.expander("Ver Trabalhos Orientados"):
+                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+                
+        elif tipo_busca == "Co-orientador":
+            docs = [d for d in dados_completos if termo_busca in d.get('co_orientadores', [])]
+            st.write(f"**Volume de Co-orientações:** {len(docs)} trabalhos")
+            with st.expander("Ver Trabalhos Co-orientados"):
+                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+                
+        elif tipo_busca == "Palavra-chave":
+            docs = [d for d in dados_completos if termo_busca in d.get('palavras_chave', [])]
+            st.write(f"**Frequência na Base:** Aparece em {len(docs)} documentos")
+            with st.expander("Ver Documentos que utilizam este conceito"):
+                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+
+    with col_sna:
+        st.markdown("#### 🕸️ Métricas de Rede (SNA)")
+        metricas = sna_global.get(termo_busca)
+        
+        if metricas:
+            # Cards pequenos para as métricas
+            st.info(f"**Posição no Ranking Global:** #{metricas['Ranking Global']}")
+            st.success(f"**Comunidade (Cluster):** {metricas['Comunidade']}")
+            
+            st.metric("Grau Absoluto (Conexões)", metricas['Grau Absoluto'])
+            st.metric("Betweenness (Poder de Ponte)", f"{metricas['Betweenness']:.4f}")
+            st.metric("Centralidade (Degree)", f"{metricas['Degree Centrality']:.4f}")
+            
+            st.caption("A Comunidade indica o grupo temático/cluster matemático a que este nó pertence através do algoritmo de Louvain.")
+        else:
+            st.warning("Métricas SNA não disponíveis para este item isolado.")
 
 st.markdown("---")
 

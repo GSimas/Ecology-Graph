@@ -38,83 +38,96 @@ if 'macrotemas_computados' not in st.session_state:
 def navegar_para(novo_tipo, novo_termo): 
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
-# --- FUNÇÕES DE LÓGICA TEMÁTICA ---
 def aplicar_macrotemas(dados, api_key, num_topicos=12):
     client = Groq(api_key=api_key)
     
-    # 1. Limpeza de Texto (Stopwords reforçadas)
-    stopwords_universais = [
+    # 1. SUPER-LIMPEZA (Stopwords Cirúrgicas)
+    # Adicionamos termos que costumam "roubar" o lugar de conceitos reais
+    sujeira_academica = [
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
-        "study", "analysis", "based", "using", "results", "model", "system", "with", "from", "data"
+        "neste", "esta", "está", "este", "pelo", "pela", "seus", "suas", "nas", "aos", "meu", "sua", "através",
+        "the", "of", "and", "in", "to", "for", "with", "on", "at", "by", "from", "an", "is", "it", "this", "that",
+        "study", "analysis", "based", "using", "results", "work", "research", "paper", "thesis", "dissertation",
+        "analise", "estudo", "desenvolvimento", "proposta", "metodo", "processo", "sistema", "modelo", "projeto",
+        "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação"
     ]
 
     textos = []
     for doc in dados:
-        texto_bruto = f"{doc.get('titulo', '')} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
-        textos.append(re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', texto_bruto).lower())
+        # Ponderação: Título tem mais peso que o resumo
+        bruto = f"{(doc.get('titulo', '') + ' ') * 3} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
+        limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
+        textos.append(limpo)
 
-    # 2. Processamento Matemático (NMF)
-    vectorizer = TfidfVectorizer(max_df=0.85, min_df=2, stop_words=stopwords_universais, max_features=1000)
-    tfidf_matrix = vectorizer.fit_transform(textos)
-    nmf_model = NMF(n_components=num_topicos, random_state=42, max_iter=500)
-    nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
-    feature_names = vectorizer.get_feature_names_out()
+    # 2. VETORIZAÇÃO E NMF (Matemática Pura)
+    vectorizer = TfidfVectorizer(
+        max_df=0.8, # Ignora o que aparece em mais de 80% dos textos
+        min_df=2, 
+        stop_words=sujeira_academica, 
+        max_features=800
+    )
+    
+    try:
+        tfidf_matrix = vectorizer.fit_transform(textos)
+        nmf_model = NMF(n_components=num_topicos, random_state=42, init='nndsvd')
+        nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
+        feature_names = vectorizer.get_feature_names_out()
+    except Exception as e:
+        st.error(f"Erro na vetorização: {e}")
+        return dados
 
-    # Preparar a lista de palavras-chave de cada tópico para enviar ao Groq de uma vez
-    clusters_contexto = []
-    for topic_idx, topic in enumerate(nmf_model.components_):
-        top_indices = topic.argsort()[:-10:-1]
-        cluster_words = [feature_names[i] for i in top_indices]
-        clusters_contexto.append(f"Tópico {topic_idx+1}: {', '.join(cluster_words)}")
+    # Montar contexto para o LLM
+    clusters = []
+    for idx, topic in enumerate(nmf_model.components_):
+        top_words = [feature_names[i] for i in topic.argsort()[:-8:-1]]
+        clusters.append(f"Área {idx+1}: {', '.join(top_words)}")
+    
+    contexto = "\n".join(clusters)
 
-    contexto_prompt = "\n".join(clusters_contexto)
+    # 3. LLM (O Cérebro) - Mudamos para o modelo 70b padrão, mais estável
+    prompt_humanizado = f"""Você é um Curador Acadêmico Interdisciplinar da UFSC.
+Recebi {num_topicos} grupos de conceitos técnicos de teses e dissertações programas de pós-graduação.
+Crie títulos acadêmicos, científicos, técnicos curtos (3-4 palavras) e profissionais para cada grupo.
 
-    # 3. O Super-Prompt (Visão Ecologia do Conhecimento)
-    prompt_sistema = """Você é um classificador de temas de teses e dissertações de programas de pós-graduação. 
-Sua tarefa é ler grupos de palavras-chave e dar um nome apropriado acadêmico para cada área.
-Evite nomes genéricos como 'Estudo de X' ou 'Aplicações de Y'. 
-Busque títulos que sejam objetivos e integrem aqueles termos"""
+Exemplo de tom desejado: 
+- 'Dinâmica de Fluidos e Turbulência' (em vez de 'Área de Calor')
+- 'Integridade Estrutural e Fadiga' (em vez de 'Área de Tensões')
 
-    prompt_usuario = f"""Abaixo estão {num_topicos} grupos de palavras-chave extraídas de teses. 
-Crie um título curto (3 a 5 palavras) para cada um. 
+GRUPOS DE CONCEITOS:
+{contexto}
 
-REGRAS ESTRITAS:
-1. Retorne APENAS uma lista numerada.
-2. Não use a palavra 'Correlatas' ou 'Aplicações'.
-
-GRUPOS:
-{contexto_prompt}"""
+Responda APENAS com a lista numerada dos títulos, um por linha."""
 
     try:
         completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": prompt_sistema},
-                {"role": "user", "content": prompt_usuario}
-            ],
-            model="llama-3.1-70b-versatile", # Modelo mais robusto que o 8b
-            temperature=0.4, # Aumentamos para dar mais "vida" aos nomes
+            messages=[{"role": "user", "content": prompt_humanizado}],
+            model="llama3-70b-8192", # Modelo altamente estável no Groq
+            temperature=0.4
         )
-        
-        # Parseando a lista numerada que o LLM devolve
         respostas = completion.choices[0].message.content.strip().split('\n')
-        # Limpa números e pontos (ex: "1. Termodinâmica" -> "Termodinâmica")
-        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip() for r in respostas if r.strip()]
+        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip() for r in respostas if len(r) > 5]
         
-        # Garante que temos nomes para todos os tópicos (preenchimento se a IA pular algum)
-        while len(nomes_finais) < num_topicos:
-            nomes_finais.append("Fronteiras Multidisciplinares")
+        # Validação de segurança
+        if len(nomes_finais) < num_topicos:
+            raise ValueError("Resposta incompleta do LLM")
 
     except Exception as e:
-        st.error(f"Erro na API Groq: {e}")
-        nomes_finais = [f"Área de {c.split(':')[1].split(',')[0].title()}" for c in clusters_contexto]
+        # Se falhar, o novo Plano B é mais inteligente
+        st.warning(f"Aviso: Usando nomenclatura simplificada (API indisponível: {e})")
+        nomes_finais = []
+        for c in clusters:
+            palavras = c.split(': ')[1].split(', ')
+            # Pega as duas primeiras palavras reais e monta um título digno
+            nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
 
-    # 4. Atribuição
+    # 4. ATRIBUIÇÃO
     for i, doc in enumerate(dados):
-        idx = nmf_matrix[i].argmax()
-        doc['macrotema'] = nomes_finais[idx] if idx < len(nomes_finais) else "Intersecções do Conhecimento"
+        top_idx = nmf_matrix[i].argmax()
+        doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
 
     return dados
+
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
 @st.cache_data
 def carregar_catalogo_programas():

@@ -103,7 +103,7 @@ def preparar_csv_exportacao(dados):
     return df.to_csv(index=False).encode('utf-8')
 
 @st.cache_resource
-def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
+def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo (Original)"):
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
@@ -121,6 +121,12 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
 
     degree_cent = nx.degree_centrality(G)
     betweenness_cent = nx.betweenness_centrality(G)
+    graus_absolutos = dict(G.degree())
+
+    # Valores máximos para normalização de tamanho (escala de 10 a 60 pixels)
+    max_deg = max(degree_cent.values()) if degree_cent else 1
+    max_bet = max(betweenness_cent.values()) if betweenness_cent else 1
+    max_grau = max(graus_absolutos.values()) if graus_absolutos else 1
 
     legendas_comunidades = []
     mapeamento_comunidade = {}
@@ -143,26 +149,42 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
                 G.nodes[node]['color'] = cor_com
                 mapeamento_comunidade[node] = id_com
 
+    # Aplicação de Tamanhos e Cores base
+    tamanhos_padrao = {'Documento': 30, 'Autor': 20, 'Orientador': 25, 'Conceito': 15}
+
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
-        janela_sna = f"\n\n--- MÉTRICAS SNA ---\nGrau: {G.degree(node)}\nCentralidade de Grau: {degree_cent[node]:.4f}\nIntermediação: {betweenness_cent[node]:.4f}"
+        grau_atual = graus_absolutos[node]
+        deg_c_atual = degree_cent[node]
+        bet_c_atual = betweenness_cent[node]
+        
+        janela_sna = f"\n\n--- MÉTRICAS SNA ---\nGrau Absoluto: {grau_atual}\nCentralidade de Grau: {deg_c_atual:.4f}\nIntermediação: {bet_c_atual:.4f}"
         
         if node in mapeamento_comunidade:
             janela_sna += f"\n👉 Comunidade: {mapeamento_comunidade[node]}"
 
+        # Lógica matemática de dimensionamento
+        if metodo_tamanho == "Grau Absoluto":
+            tamanho = 10 + (grau_atual / max_grau) * 50
+        elif metodo_tamanho == "Degree Centrality":
+            tamanho = 10 + (deg_c_atual / max_deg) * 50 if max_deg > 0 else tamanhos_padrao.get(tipo, 20)
+        elif metodo_tamanho == "Betweenness":
+            tamanho = 10 + (bet_c_atual / max_bet) * 50 if max_bet > 0 else tamanhos_padrao.get(tipo, 20)
+        else:
+            tamanho = tamanhos_padrao.get(tipo, 20)
+
         if tipo == 'Documento':
             n_acad = attrs.get('nivel', 'N/A')
-            attrs.update({'shape': 'square', 'size': 30, 'title': f"DOCUMENTO ({n_acad}):\n{node}\nAno: {attrs.get('ano')}\nAutor(es): {attrs.get('autores')}\nOrientador: {attrs.get('orientador')}{janela_sna}"})
+            attrs.update({'shape': 'square', 'size': tamanho, 'title': f"DOCUMENTO ({n_acad}):\n{node}\nAno: {attrs.get('ano')}\nAutor(es): {attrs.get('autores')}\nOrientador: {attrs.get('orientador')}{janela_sna}"})
         elif tipo == 'Autor':
-            attrs.update({'shape': 'dot', 'size': 20, 'title': f"AUTOR:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'dot', 'size': tamanho, 'title': f"AUTOR:\n{node}{janela_sna}"})
         elif tipo == 'Orientador':
-            attrs.update({'shape': 'star', 'size': 25, 'title': f"ORIENTADOR:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'star', 'size': tamanho, 'title': f"ORIENTADOR:\n{node}{janela_sna}"})
         elif tipo == 'Conceito':
-            attrs.update({'shape': 'triangle', 'size': 15, 'title': f"CONCEITO:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'triangle', 'size': tamanho, 'title': f"CONCEITO:\n{node}{janela_sna}"})
 
-    if metodo_cor == "Original (Categoria)":
-        for node, attrs in G.nodes(data=True):
-            tipo = attrs.get('tipo', 'Desconhecido')
+        # Cor Original
+        if metodo_cor == "Original (Categoria)":
             if tipo == 'Documento': attrs['color'] = '#E74C3C'
             elif tipo == 'Autor': attrs['color'] = '#3498DB'
             elif tipo == 'Orientador': attrs['color'] = '#F39C12'
@@ -170,74 +192,43 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
 
     net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
     net.from_nx(G)
-    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "tooltipDelay": 100}}')
+    
+    # Restauro do comportamento padrão da vis.js (Highlight ao invés de Ocultar)
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "selectConnectedEdges": true}}')
+    
     path = "grafo_temp.html"
     net.save_graph(path)
     
-    script_ocultar = """
-    network.on("selectNode", function (params) {
-        if (params.nodes.length === 1) {
-            var nodeId = params.nodes[0];
-            var connectedNodes = network.getConnectedNodes(nodeId);
-            nodes.update(nodes.get().map(n => ({id: n.id, hidden: !(n.id === nodeId || connectedNodes.includes(n.id))})));
-        }
-    });
-    network.on("deselectNode", function () {
-        nodes.update(nodes.get().map(n => ({id: n.id, hidden: false})));
-    });
-    """
-    with open(path, 'r', encoding='utf-8') as f: html_content = f.read()
-    with open(path, 'w', encoding='utf-8') as f: f.write(html_content.replace('return network;', script_ocultar + '\n\treturn network;'))
     return path, G.number_of_nodes(), G.number_of_edges(), legendas_comunidades
 
 @st.cache_resource
 def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
-    """Gera um grafo Pyvis exclusivo para a co-ocorrência de palavras-chave (VOSviewer style)."""
     G = nx.Graph()
-    
     for d in dados_recorte:
         pks = d.get('palavras_chave', [])
-        # Adiciona nós (Contagem de ocorrências globais)
         for pk in pks:
-            if G.has_node(pk):
-                G.nodes[pk]['count'] += 1
-            else:
-                G.add_node(pk, count=1, tipo='Conceito')
+            if G.has_node(pk): G.nodes[pk]['count'] += 1
+            else: G.add_node(pk, count=1, tipo='Conceito')
         
-        # Cria arestas com base na combinação (co-ocorrência no mesmo documento)
         for pk1, pk2 in itertools.combinations(pks, 2):
-            if G.has_edge(pk1, pk2):
-                G[pk1][pk2]['weight'] += 1
-            else:
-                G.add_edge(pk1, pk2, weight=1)
+            if G.has_edge(pk1, pk2): G[pk1][pk2]['weight'] += 1
+            else: G.add_edge(pk1, pk2, weight=1)
 
-    # Filtra arestas fracas com base no seletor do utilizador
     arestas_remover = [(u, v) for u, v, attrs in G.edges(data=True) if attrs['weight'] < min_coocorrencia]
     G.remove_edges_from(arestas_remover)
-    
-    # Remove nós que ficaram isolados após o filtro de arestas
     G.remove_nodes_from(list(nx.isolates(G)))
 
     for node, attrs in G.nodes(data=True):
-        tamanho = 10 + (attrs['count'] * 1.5) # Tamanho dinâmico
-        attrs.update({
-            'shape': 'dot', 
-            'size': min(tamanho, 60), 
-            'color': '#2ECC71', 
-            'title': f"<b>Conceito:</b> {node}\nOcorrências Totais: {attrs['count']}"
-        })
+        tamanho = 10 + (attrs['count'] * 1.5)
+        attrs.update({'shape': 'dot', 'size': min(tamanho, 60), 'color': '#2ECC71', 'title': f"<b>Conceito:</b> {node}\nOcorrências Totais: {attrs['count']}"})
 
     for u, v, attrs in G.edges(data=True):
         peso = attrs['weight']
-        attrs.update({
-            'value': peso, # O Pyvis usa 'value' para a espessura da linha
-            'title': f"Co-ocorrências: {peso}",
-            'color': 'rgba(255, 255, 255, 0.2)'
-        })
+        attrs.update({'value': peso, 'title': f"Co-ocorrências: {peso}", 'color': 'rgba(255, 255, 255, 0.2)'})
 
     net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
     net.from_nx(G)
-    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "tooltipDelay": 100}}')
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "selectConnectedEdges": true}}')
     path = "grafo_coocorrencia.html"
     net.save_graph(path)
     return path, G.number_of_nodes(), G.number_of_edges()
@@ -324,19 +315,19 @@ total_grafo = len(dados_grafo)
 
 if total_grafo > 0:
     with st.form("form_grafo"):
-        col_g1, col_g2, col_g3 = st.columns([2, 2, 1])
+        col_g1, col_g2 = st.columns(2)
         with col_g1:
             max_docs_g = total_grafo if total_grafo > 1 else 2
             n_registros_grafo = st.slider("Volume de Documentos para a Rede:", 1, max_docs_g, min(40, total_grafo), 1)
-        with col_g2:
             metodo_coloracao = st.selectbox("Mapeamento de Cores e Comunidades:", ["Original (Categoria)", "Comunidades (Louvain)", "Comunidades (Greedy Modularity)", "Comunidades (Girvan-Newman)"])
-        with col_g3:
-            st.markdown("<br><br>", unsafe_allow_html=True)
+        with col_g2:
+            metodo_tamanho = st.selectbox("Tamanho dos Nós (Métrica SNA):", ["Tamanho Fixo (Original)", "Grau Absoluto", "Degree Centrality", "Betweenness"])
+            st.markdown("<br>", unsafe_allow_html=True)
             btn_render_grafo = st.form_submit_button("Renderizar Grafo", use_container_width=True)
 
     if btn_render_grafo:
         with st.spinner("A construir a rede topológica visual..."):
-            path, nos, arestas, legendas = gerar_html_pyvis(dados_grafo[:n_registros_grafo], metodo_cor=metodo_coloracao)
+            path, nos, arestas, legendas = gerar_html_pyvis(dados_grafo[:n_registros_grafo], metodo_cor=metodo_coloracao, metodo_tamanho=metodo_tamanho)
             st.session_state['path_grafo'] = path
             st.session_state['kpis_grafo'] = {'nos': nos, 'arestas': arestas, 'legendas': legendas}
             st.session_state['grafo_pronto'] = True
@@ -347,7 +338,7 @@ if total_grafo > 0:
         c1.metric("Nós", kpis['nos'])
         c2.metric("Arestas", kpis['arestas'])
         c3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
-        c4.info("Dica: Clique num nó para isolá-lo.")
+        c4.info("Dica: Clique num nó para ver ligações diretas.")
         
         if kpis.get('legendas'):
             st.markdown("#### 🎨 Comunidades Identificadas")
@@ -395,18 +386,14 @@ with st.form("form_tabela"):
 
 if btn_render_tabela:
     if met_sel and cat_sel:
-        # Filtra os dados de entrada com base nas escolhas
         dados_tab_filtrados = []
         for d in dados_completos[:n_registros_tabela]:
             if d.get('nivel_academico', 'Outros') not in niveis_sel_tabela: continue
-            
             ano_d = int(d.get('ano')) if d.get('ano') and str(d.get('ano')).isdigit() else None
             if not ano_d or ano_d < anos_sel_tabela[0] or ano_d > anos_sel_tabela[1]: continue
-            
             if conceitos_contexto:
                 pks_doc = set(d.get('palavras_chave', []))
                 if not any(c in pks_doc for c in conceitos_contexto): continue
-                
             dados_tab_filtrados.append(d)
 
         if not dados_tab_filtrados:
@@ -414,8 +401,6 @@ if btn_render_tabela:
         else:
             df_completo = obter_dataframe_metricas(dados_tab_filtrados)
             df_top_x = df_completo[df_completo['Categoria'].isin(cat_sel)].sort_values(by=met_ord, ascending=False).head(top_x)
-            
-            # Adiciona a coluna Posição (Ranking Index) no início
             df_top_x.insert(0, 'Posição', range(1, len(df_top_x) + 1))
             
             st.session_state['df_top_x'] = df_top_x
@@ -440,7 +425,7 @@ with st.form("form_historico"):
     with col_h_filt1:
         niveis_sel_hist = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_hist")
     with col_h_filt2:
-        orientador_sel_hist = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para considerar todos os orientadores.")
+        orientador_sel_hist = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para todos.")
     with col_h_filt3:
         anos_sel_hist = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_hist")
 
@@ -554,7 +539,6 @@ with st.form("form_coocorrencia"):
     btn_render_coocorrencia = st.form_submit_button("Gerar Grafo de Co-ocorrência", type="primary")
 
 if btn_render_coocorrencia:
-    # Filtra os dados de entrada
     dados_co = []
     for d in dados_completos:
         if d.get('nivel_academico', 'Outros') not in niveis_sel_co: continue
@@ -566,7 +550,7 @@ if btn_render_coocorrencia:
     if not dados_co:
         st.warning("Não há documentos nos filtros selecionados para a Co-ocorrência.")
     else:
-        with st.spinner("A mapear co-ocorrências (Isto pode demorar se a base for muito grande)..."):
+        with st.spinner("A mapear co-ocorrências..."):
             path_co, nos_co, arestas_co = gerar_html_coocorrencia(dados_co, min_coocorrencia=min_peso_co)
             st.session_state['path_co'] = path_co
             st.session_state['kpis_co'] = {'nos': nos_co, 'arestas': arestas_co}

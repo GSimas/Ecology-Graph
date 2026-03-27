@@ -240,10 +240,11 @@ if total_grafo > 0:
 
     if st.session_state['grafo_pronto']:
         kpis = st.session_state['kpis_grafo']
-        col_k1, col_k2, col_k3 = st.columns(3)
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
         col_k1.metric("Nós no Grafo", kpis['nos'])
         col_k2.metric("Arestas no Grafo", kpis['arestas'])
-        col_k3.info("Dica: Use a roda do rato para Zoom e clique para focar.")
+        col_k3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
+        col_k4.info("Dica: Use o scroll para Zoom e arraste para navegar.")
         
         if kpis.get('legendas'):
             st.markdown("#### 🎨 Comunidades Identificadas")
@@ -252,29 +253,22 @@ if total_grafo > 0:
                 html_legend += f"<div style='margin-right:20px;'><span style='color:{leg['cor']};'>●</span> Com. {leg['id']} ({leg['tamanho']})</div>"
             st.markdown(html_legend + "</div>", unsafe_allow_html=True)
 
-        # Renderização Agraph Nativa
-        config = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
-        agraph(nodes=st.session_state['graf_glob_nodes'], edges=st.session_state['graf_glob_edges'], config=config)
-
-    if st.session_state['grafo_pronto']:
-        kpis = st.session_state['kpis_grafo']
-        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-        col_k1.metric("Nós no Grafo", kpis['nos'])
-        col_k2.metric("Arestas no Grafo", kpis['arestas'])
-        col_k3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
-        col_k4.info("Dica: Clique num nó para ver ligações diretas (Highlight).")
+        # --- REQUERIDO: REMOVER O 'WITH OPEN' E USAR ESTE BLOCO ---
+        config = Config(
+            width="100%", 
+            height=650, 
+            directed=False, 
+            physics=True, 
+            nodeHighlightBehavior=True, 
+            highlightColor="#F1C40F",
+            collapsible=False
+        )
         
-        if kpis.get('legendas'):
-            st.markdown("#### 🎨 Comunidades Identificadas")
-            html_legend = "<div style='background-color:#2C3E50; padding:10px; border-radius:5px; margin-bottom:15px; display:flex; flex-wrap:wrap;'>"
-            lendas_ordenadas = sorted(kpis.get('legendas', []), key=lambda x: x['tamanho'], reverse=True)
-            for leg in lendas_ordenadas:
-                html_legend += f"<div style='margin-right:20px; margin-bottom:5px; align-items:center;'><span style='display:inline-block; width:15px; height:15px; background-color:{leg['cor']}; border-radius:50%; vertical-align:middle; margin-right:5px;'></span><b>Comunidade {leg['id']}</b> ({leg['tamanho']} nós)</div>"
-            html_legend += "</div>"
-            st.markdown(html_legend, unsafe_allow_html=True)
-
-        with open(st.session_state['path_grafo'], 'r', encoding='utf-8') as f:
-            components.html(f.read(), height=650, scrolling=False)
+        agraph(
+            nodes=st.session_state['graf_glob_nodes'], 
+            edges=st.session_state['graf_glob_edges'], 
+            config=config
+        )
 else:
     st.warning("Nenhum documento selecionado para o Grafo.")
 
@@ -492,15 +486,30 @@ if st.session_state['coocorrencia_pronta']:
 
 if st.session_state['coocorrencia_pronta']:
     kpis_co = st.session_state['kpis_co']
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Conceitos Interligados", kpis_co['nos'])
     c2.metric("Conexões Formadas", kpis_co['arestas'])
+    c3.info("Dica: Nós maiores indicam termos mais frequentes.")
     
     if kpis_co['nos'] == 0:
         st.info("O filtro de ruído está muito alto. Tente diminuir o número mínimo de co-ocorrências.")
     else:
-        with open(st.session_state['path_co'], 'r', encoding='utf-8') as f:
-            components.html(f.read(), height=650, scrolling=False)
+        # --- REQUERIDO: REMOVER O 'WITH OPEN' E USAR ESTE BLOCO ---
+        config_co = Config(
+            width="100%", 
+            height=650, 
+            directed=False, 
+            physics=True, 
+            nodeHighlightBehavior=True, 
+            highlightColor="#2ECC71",
+            collapsible=False
+        )
+        
+        agraph(
+            nodes=st.session_state['co_nodes'], 
+            edges=st.session_state['co_edges'], 
+            config=config_co
+        )
 
 st.markdown("---")
 

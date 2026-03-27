@@ -4,7 +4,11 @@ import networkx as nx
 import networkx.algorithms.community as nx_comm
 from pyvis.network import Network
 import pandas as pd
+import plotly.express as px
 import json
+import re
+from collections import Counter
+import itertools
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -19,88 +23,329 @@ st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
     
-    /* Estilo dos Cards Estatísticos */
-    .stMetric {
-        background-color: #262626;
-        padding: 20px;
+    /* Estilo dos Cards Estatísticos (KPIs) */
+    [data-testid="stMetricValue"] { font-size: 2rem !important; color: #F39C12 !important; }
+    [data-testid="stMetricLabel"] { font-size: 1rem !important; color: #BDC3C7 !important; font-weight: bold; }
+    
+    div[data-testid="metric-container"] {
+        background-color: #2C3E50;
+        padding: 15px;
         border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.4);
         border-left: 5px solid #F39C12;
         transition: transform 0.3s;
     }
-    .stMetric:hover {
+    div[data-testid="metric-container"]:hover {
         transform: translateY(-5px);
         border-left: 5px solid #2ECC71;
     }
     
-    h1, h2, h3 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
+    h1, h2, h3, h4, h5 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
     
-    /* Botão Primário */
     button[kind="primary"] {
         background-color: #2ECC71 !important;
         color: white !important;
+        border-color: #27AE60 !important;
         font-weight: bold !important;
+    }
+    button[kind="primary"]:hover {
+        background-color: #27AE60 !important;
+        border-color: #2ECC71 !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE CARREGAMENTO ---
+# --- INICIALIZAÇÃO DE ESTADO ---
+if 'grafo_pronto' not in st.session_state: st.session_state['grafo_pronto'] = False
+if 'tabela_pronta' not in st.session_state: st.session_state['tabela_pronta'] = False
+if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia_pronta'] = False
+
+# --- FUNÇÕES DE BACK-END INDEPENDENTES ---
 @st.cache_data
-def carregar_dados():
+def carregar_dados_locais():
     try:
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
             return json.load(f)
-    except:
-        st.error("Erro ao carregar base_ppgegc.json.")
+    except FileNotFoundError:
+        st.error("Ficheiro base_ppgegc.json não encontrado no repositório.")
         return []
 
-# --- PROCESSAMENTO DAS ESTATÍSTICAS ---
-dados_completos = carregar_dados()
+@st.cache_data
+def obter_dataframe_metricas(dados_recorte):
+    G = nx.Graph()
+    for tese in dados_recorte:
+        doc_id = tese['titulo']
+        G.add_node(doc_id, tipo='Documento')
+        for autor in tese.get('autores', []):
+            G.add_node(autor, tipo='Autor')
+            G.add_edge(autor, doc_id)
+        if tese.get('orientador'):
+            G.add_node(tese['orientador'], tipo='Orientador')
+            G.add_edge(tese['orientador'], doc_id)
+        for pk in tese.get('palavras_chave', []):
+            G.add_node(pk, tipo='Conceito')
+            G.add_edge(doc_id, pk)
 
-if dados_completos:
-    # Cálculos para os Cards
-    total_docs = len(dados_completos)
-    teses = len([d for d in dados_completos if "Tese" in d.get('nivel_academico', '')])
-    dissertacoes = len([d for d in dados_completos if "Disserta" in d.get('nivel_academico', '')])
+    degree_cent = nx.degree_centrality(G)
+    betweenness_cent = nx.betweenness_centrality(G)
     
-    # Conjuntos únicos para contagem precisa
-    autores_set = set()
-    orientadores_set = set()
-    coorientadores_set = set()
-    keywords_set = set()
-    
-    for d in dados_completos:
-        for a in d.get('autores', []): autores_set.add(a)
-        if d.get('orientador'): orientadores_set.add(d.get('orientador'))
-        for co in d.get('co_orientadores', []): coorientadores_set.add(co)
-        for kw in d.get('palavras_chave', []): keywords_set.add(kw)
+    lista = []
+    for node, attrs in G.nodes(data=True):
+        lista.append({
+            'Entidade (Nó)': node,
+            'Categoria': attrs.get('tipo', 'Desconhecido'),
+            'Grau Absoluto': G.degree(node),
+            'Degree Centrality': degree_cent[node],
+            'Betweenness': betweenness_cent[node]
+        })
+    return pd.DataFrame(lista)
 
-    # --- CABEÇALHO E CARDS ---
-    st.title("🌌 Ecologia do Conhecimento: PPGEGC")
-    st.markdown("### 📊 Panorama Geral da Produção Intelectual")
-    
-    # Primeira linha de Cards (Documentação)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("📄 Documentos Totais", total_docs)
-    c2.metric("🎓 Teses (Doutorado)", teses)
-    c3.metric("📜 Dissertações (Mestrado)", dissertacoes)
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Segunda linha de Cards (Atores e Saberes)
-    c4, c5, c6, c7 = st.columns(4)
-    c4.metric("✍️ Autores Únicos", len(autores_set))
-    c5.metric("🏫 Orientadores", len(orientadores_set))
-    c6.metric("🤝 Co-orientadores", len(coorientadores_set))
-    c7.metric("💡 Conceitos/Keywords", len(keywords_set))
+@st.cache_data
+def preparar_dados_base_df(dados):
+    df = pd.DataFrame(dados)
+    df['Ano'] = pd.to_numeric(df.get('ano'), errors='coerce')
+    df = df.dropna(subset=['Ano'])
+    df['Ano'] = df['Ano'].astype(int)
+    df['nivel_academico'] = df.get('nivel_academico', 'Outros / Não Especificado').fillna('Outros / Não Especificado')
+    df['titulo'] = df.get('titulo', '').fillna('')
+    df['orientador'] = df.get('orientador', 'Não informado').fillna('Não informado')
+    return df
 
-    st.markdown("---")
+@st.cache_data
+def preparar_csv_exportacao(dados):
+    df = pd.DataFrame(dados)
+    for col in ['autores', 'co_orientadores', 'palavras_chave']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
+    return df.to_csv(index=False).encode('utf-8')
 
+@st.cache_resource
+def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo (Original)"):
+    G = nx.Graph()
+    for tese in dados_recorte:
+        doc_id = tese['titulo']
+        nivel = tese.get('nivel_academico', 'Não classificado')
+        G.add_node(doc_id, tipo='Documento', ano=tese.get('ano', 'N/A'), nivel=nivel, autores=", ".join(tese.get('autores', [])), orientador=tese.get('orientador', 'Não informado'))
+        for autor in tese.get('autores', []):
+            G.add_node(autor, tipo='Autor')
+            G.add_edge(autor, doc_id)
+        if tese.get('orientador'):
+            G.add_node(tese['orientador'], tipo='Orientador')
+            G.add_edge(tese['orientador'], doc_id)
+        for pk in tese.get('palavras_chave', []):
+            G.add_node(pk, tipo='Conceito')
+            G.add_edge(doc_id, pk)
 
+    degree_cent = nx.degree_centrality(G)
+    betweenness_cent = nx.betweenness_centrality(G)
+    graus_absolutos = dict(G.degree())
 
+    max_deg = max(degree_cent.values()) if degree_cent else 1
+    max_bet = max(betweenness_cent.values()) if betweenness_cent else 1
+    max_grau = max(graus_absolutos.values()) if graus_absolutos else 1
 
+    legendas_comunidades = []
+    mapeamento_comunidade = {}
 
+    if metodo_cor != "Original (Categoria)":
+        comunidades = []
+        if metodo_cor == "Comunidades (Louvain)": comunidades = nx_comm.louvain_communities(G)
+        elif metodo_cor == "Comunidades (Greedy Modularity)": comunidades = nx_comm.greedy_modularity_communities(G)
+        elif metodo_cor == "Comunidades (Girvan-Newman)":
+            try: comunidades = next(nx_comm.girvan_newman(G))
+            except StopIteration: comunidades = [set(G.nodes())]
+            
+        paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000']
+        
+        for i, comm in enumerate(comunidades):
+            cor_com = paleta[i % len(paleta)]
+            id_com = i + 1
+            legendas_comunidades.append({"id": id_com, "cor": cor_com, "tamanho": len(comm)})
+            for node in comm:
+                G.nodes[node]['color'] = cor_com
+                mapeamento_comunidade[node] = id_com
 
+    tamanhos_padrao = {'Documento': 30, 'Autor': 20, 'Orientador': 25, 'Conceito': 15}
+
+    for node, attrs in G.nodes(data=True):
+        tipo = attrs.get('tipo', 'Desconhecido')
+        grau_atual = graus_absolutos[node]
+        deg_c_atual = degree_cent[node]
+        bet_c_atual = betweenness_cent[node]
+        
+        janela_sna = f"\n\n--- MÉTRICAS SNA ---\nGrau Absoluto: {grau_atual}\nCentralidade de Grau: {deg_c_atual:.4f}\nIntermediação: {bet_c_atual:.4f}"
+        if node in mapeamento_comunidade:
+            janela_sna += f"\n👉 Comunidade: {mapeamento_comunidade[node]}"
+
+        if metodo_tamanho == "Grau Absoluto":
+            tamanho = 10 + (grau_atual / max_grau) * 50
+        elif metodo_tamanho == "Degree Centrality":
+            tamanho = 10 + (deg_c_atual / max_deg) * 50 if max_deg > 0 else tamanhos_padrao.get(tipo, 20)
+        elif metodo_tamanho == "Betweenness":
+            tamanho = 10 + (bet_c_atual / max_bet) * 50 if max_bet > 0 else tamanhos_padrao.get(tipo, 20)
+        else:
+            tamanho = tamanhos_padrao.get(tipo, 20)
+
+        if tipo == 'Documento':
+            n_acad = attrs.get('nivel', 'N/A')
+            attrs.update({'shape': 'square', 'size': tamanho, 'title': f"DOCUMENTO ({n_acad}):\n{node}\nAno: {attrs.get('ano')}\nAutor(es): {attrs.get('autores')}\nOrientador: {attrs.get('orientador')}{janela_sna}"})
+        elif tipo == 'Autor':
+            attrs.update({'shape': 'dot', 'size': tamanho, 'title': f"AUTOR:\n{node}{janela_sna}"})
+        elif tipo == 'Orientador':
+            attrs.update({'shape': 'star', 'size': tamanho, 'title': f"ORIENTADOR:\n{node}{janela_sna}"})
+        elif tipo == 'Conceito':
+            attrs.update({'shape': 'triangle', 'size': tamanho, 'title': f"CONCEITO:\n{node}{janela_sna}"})
+
+        if metodo_cor == "Original (Categoria)":
+            if tipo == 'Documento': attrs['color'] = '#E74C3C'
+            elif tipo == 'Autor': attrs['color'] = '#3498DB'
+            elif tipo == 'Orientador': attrs['color'] = '#F39C12'
+            elif tipo == 'Conceito': attrs['color'] = '#2ECC71'
+
+    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
+    net.from_nx(G)
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "selectConnectedEdges": true}}')
+    path = "grafo_temp.html"
+    net.save_graph(path)
+    return path, G.number_of_nodes(), G.number_of_edges(), legendas_comunidades
+
+@st.cache_resource
+def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
+    G = nx.Graph()
+    for d in dados_recorte:
+        pks = d.get('palavras_chave', [])
+        for pk in pks:
+            if G.has_node(pk): G.nodes[pk]['count'] += 1
+            else: G.add_node(pk, count=1, tipo='Conceito')
+        
+        for pk1, pk2 in itertools.combinations(pks, 2):
+            if G.has_edge(pk1, pk2): G[pk1][pk2]['weight'] += 1
+            else: G.add_edge(pk1, pk2, weight=1)
+
+    arestas_remover = [(u, v) for u, v, attrs in G.edges(data=True) if attrs['weight'] < min_coocorrencia]
+    G.remove_edges_from(arestas_remover)
+    G.remove_nodes_from(list(nx.isolates(G)))
+
+    for node, attrs in G.nodes(data=True):
+        tamanho = 10 + (attrs['count'] * 1.5)
+        attrs.update({'shape': 'dot', 'size': min(tamanho, 60), 'color': '#2ECC71', 'title': f"<b>Conceito:</b> {node}\nOcorrências Totais: {attrs['count']}"})
+
+    for u, v, attrs in G.edges(data=True):
+        peso = attrs['weight']
+        attrs.update({'value': peso, 'title': f"Co-ocorrências: {peso}", 'color': 'rgba(255, 255, 255, 0.2)'})
+
+    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
+    net.from_nx(G)
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "selectConnectedEdges": true}}')
+    path = "grafo_coocorrencia.html"
+    net.save_graph(path)
+    return path, G.number_of_nodes(), G.number_of_edges()
+
+def obter_frequencias_texto(df_hist, fonte_nuvem):
+    if fonte_nuvem == "Títulos dos Documentos":
+        texto = " ".join(df_hist['titulo'].dropna().astype(str).tolist()).lower()
+        texto = re.sub(r'[^\w\s]', '', texto)
+        palavras = texto.split()
+        stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia'])
+        palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
+        return dict(Counter(palavras_limpas).most_common(100))
+    else:
+        lista_c = []
+        for lst in df_hist['palavras_chave']: lista_c.extend(lst)
+        return dict(Counter(lista_c).most_common(100))
+
+def renderizar_nuvem_interativa_html(word_freq_dict):
+    data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
+    </head>
+    <body style="margin:0; padding:0; background-color:transparent;">
+        <div id="main" style="width:100%; height:450px;"></div>
+        <script>
+            var chart = echarts.init(document.getElementById('main'));
+            var option = {{
+                tooltip: {{ show: true, formatter: '<b>{{b}}</b><br/>Ocorrências: {{c}}' }},
+                series: [{{
+                    type: 'wordCloud',
+                    shape: 'circle',
+                    left: 'center', top: 'center', width: '95%', height: '95%',
+                    sizeRange: [14, 70],
+                    rotationRange: [-45, 90], rotationStep: 45,
+                    gridSize: 8,
+                    drawOutOfBound: false, layoutAnimation: true,
+                    textStyle: {{
+                        fontFamily: 'sans-serif', fontWeight: 'bold',
+                        color: function () {{
+                            return 'rgb(' + [Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100)].join(',') + ')';
+                        }}
+                    }},
+                    data: {data_js}
+                }}]
+            }};
+            chart.setOption(option);
+            window.onresize = chart.resize;
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
+
+# --- INÍCIO DA INTERFACE FRONT-END ---
+
+dados_completos = carregar_dados_locais()
+if not dados_completos:
+    st.stop()
+
+# --- PREPARAÇÃO DAS LISTAS GLOBAIS ---
+niveis_disponiveis = sorted(list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos])))
+orientadores_disponiveis = sorted(list(set([d.get('orientador', 'Não informado') for d in dados_completos if d.get('orientador')])))
+lista_todos_conceitos = []
+for d in dados_completos: lista_todos_conceitos.extend(d.get('palavras_chave', []))
+conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
+anos_disponiveis = [int(d.get('ano')) for d in dados_completos if d.get('ano') and str(d.get('ano')).isdigit()]
+min_ano_global = min(anos_disponiveis) if anos_disponiveis else 2000
+max_ano_global = max(anos_disponiveis) if anos_disponiveis else 2025
+
+# --- CÁLCULO DOS KPIs PARA OS CARDS ---
+total_docs = len(dados_completos)
+teses = len([d for d in dados_completos if "Tese" in d.get('nivel_academico', '')])
+dissertacoes = len([d for d in dados_completos if "Disserta" in d.get('nivel_academico', '')])
+
+autores_set = set()
+orientadores_set = set()
+coorientadores_set = set()
+keywords_set = set()
+
+for d in dados_completos:
+    for a in d.get('autores', []): autores_set.add(a)
+    if d.get('orientador'): orientadores_set.add(d.get('orientador'))
+    for co in d.get('co_orientadores', []): coorientadores_set.add(co)
+    for kw in d.get('palavras_chave', []): keywords_set.add(kw)
+
+# --- RENDERIZAÇÃO DO CABEÇALHO ---
+st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
+st.markdown("Plataforma de inteligência bibliométrica para mapeamento de redes académicas, evolução histórica e análise topológica estrutural do conhecimento.")
+
+# Linha 1 de Cards
+c1, c2, c3 = st.columns(3)
+c1.metric("📄 Documentos Totais", total_docs)
+c2.metric("🎓 Teses (Doutorado)", teses)
+c3.metric("📜 Dissertações", dissertacoes)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# Linha 2 de Cards
+c4, c5, c6, c7 = st.columns(4)
+c4.metric("✍️ Autores Únicos", len(autores_set))
+c5.metric("🏫 Orientadores", len(orientadores_set))
+c6.metric("🤝 Co-orientadores", len(coorientadores_set))
+c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
+
+st.markdown("---")
 
 # === SEÇÃO 1: GRAFO INTERATIVO GERAL ===
 st.header("🕸️ 1. Topologia e Grafo Interativo")
@@ -129,11 +374,11 @@ if total_grafo > 0:
 
     if st.session_state['grafo_pronto']:
         kpis = st.session_state['kpis_grafo']
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Nós", kpis['nos'])
-        c2.metric("Arestas", kpis['arestas'])
-        c3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
-        c4.info("Dica: Clique num nó para ver ligações diretas.")
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+        col_k1.metric("Nós no Grafo", kpis['nos'])
+        col_k2.metric("Arestas no Grafo", kpis['arestas'])
+        col_k3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
+        col_k4.info("Dica: Clique num nó para ver ligações diretas (Highlight).")
         
         if kpis.get('legendas'):
             st.markdown("#### 🎨 Comunidades Identificadas")
@@ -160,12 +405,11 @@ with st.form("form_tabela"):
     with col_t_filt2:
         anos_sel_tabela = st.slider("Filtrar por Período (Ano):", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_tab")
     with col_t_filt3:
-        conceitos_contexto = st.multiselect("Filtrar Rede por Documentos que contenham os Conceitos:", options=conceitos_unicos, default=[], help="Se vazio, analisa a rede inteira. Se selecionado, calcula as métricas apenas nos documentos que possuem estas palavras-chave.")
+        conceitos_contexto = st.multiselect("Filtrar por Documentos que contenham os Conceitos:", options=conceitos_unicos, default=[], help="Se vazio, analisa a rede inteira.")
 
-    st.markdown("##### Configurações do Ranking")
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
-        n_registros_tabela = st.slider("Volume de documentos base para o cálculo:", 1, len(dados_completos), len(dados_completos), 1)
+        n_registros_tabela = st.slider("Volume de documentos base para o cálculo matemático:", 1, len(dados_completos), len(dados_completos), 1)
     with col_t2:
         top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
 
@@ -230,7 +474,8 @@ with st.form("form_historico"):
     with col_h2:
         modo_grafico = st.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Conceito (Palavras-chave)"], horizontal=True)
         if modo_grafico == "Análise por Conceito (Palavras-chave)":
-            conceitos_sel_hist = st.multiselect("Conceitos a comparar:", conceitos_unicos, default=pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist())
+            top_5_default = pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist()
+            conceitos_sel_hist = st.multiselect("Conceitos a comparar:", conceitos_unicos, default=top_5_default)
         else:
             conceitos_sel_hist = []
 
@@ -316,7 +561,7 @@ if btn_render_nuvem and not df_geral_base.empty:
 
 st.markdown("---")
 
-# === SEÇÃO 5: GRAFO DE CO-OCORRÊNCIA (VOSVIEWER STYLE) ===
+# === SEÇÃO 5: GRAFO DE CO-OCORRÊNCIA ===
 st.header("🔗 5. Grafo de Co-ocorrência de Palavras")
 st.write("Analise como os conceitos e palavras-chave se relacionam dentro das teses e dissertações (clusters temáticos).")
 
@@ -330,7 +575,6 @@ with st.form("form_coocorrencia"):
         anos_sel_co = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_co")
         
     min_peso_co = st.slider("Filtro de Ruído: Mostrar apenas conexões que ocorrem juntas pelo menos X vezes:", min_value=1, max_value=20, value=2)
-    
     btn_render_coocorrencia = st.form_submit_button("Gerar Grafo de Co-ocorrência", type="primary")
 
 if btn_render_coocorrencia:
@@ -370,7 +614,7 @@ st.header("📥 6. Exportação da Base de Dados Bruta")
 col_b1, col_b2 = st.columns(2)
 with col_b1:
     json_string = json.dumps(dados_completos, ensure_ascii=False, indent=4)
-    st.download_button("📄 Baixar Base Completa (JSON Original)", file_name="base_ppgegc.json", mime="application/json", data=json_string)
+    st.download_button("📄 Baixar Base Completa (JSON)", file_name="base_ppgegc.json", mime="application/json", data=json_string)
 with col_b2:
     csv_bytes = preparar_csv_exportacao(dados_completos)
-    st.download_button("📊 Baixar Base Completa (Formato CSV)", file_name="base_ppgegc.csv", mime="text/csv", data=csv_bytes)
+    st.download_button("📊 Baixar Base Completa (CSV)", file_name="base_ppgegc.csv", mime="text/csv", data=csv_bytes)

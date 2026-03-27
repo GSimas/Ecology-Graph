@@ -466,7 +466,6 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
 if 'dados_completos' not in st.session_state:
     st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
     
-    # AGORA CARREGA INSTANTANEAMENTE DO JSON LOCAL
     colecoes_disponiveis = carregar_catalogo_programas()
     
     if colecoes_disponiveis:
@@ -502,7 +501,6 @@ if 'dados_completos' not in st.session_state:
                 for prog in programas_selecionados:
                     status_box.info(f"🚀 Iniciando conexão OAI-PMH com: {prog}...")
                     set_spec_alvo = colecoes_disponiveis[prog]
-                    # Passamos o set_spec real encontrado no JSON
                     dados = realizar_extracao(set_spec_alvo, status_box, nome_prog=prog)
                     dados_agregados.extend(dados)
                 
@@ -517,10 +515,15 @@ if 'dados_completos' not in st.session_state:
                         
                     st.rerun() 
     else:
-        st.stop()
+        st.error("Não foi possível carregar o catálogo de programas. Verifique o ficheiro JSON.")
+        
+    # --- BARREIRA DE PROTEÇÃO ABSOLUTA ---
+    # Interrompe a leitura do script aqui mesmo, evitando o KeyError nas linhas abaixo.
+    st.stop()
 
-
-# --- O DASHBOARD (SÓ APARECE APÓS A EXTRAÇÃO) ---
+# ==========================================
+# O DASHBOARD (SÓ APARECE APÓS A EXTRAÇÃO)
+# ==========================================
 dados_completos = st.session_state['dados_completos']
 nome_programa = st.session_state['nome_programa']
 

@@ -3,13 +3,12 @@ import pandas as pd
 import json
 from groq import Groq
 
-MODELO_IA = "llama-3.3-70b-versatile"
-
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Chatbot Ecológico | PPGEGC",
     page_icon="🤖",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # Estilização para o Modo Escuro
@@ -17,16 +16,21 @@ st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
     .stChatMessage { background-color: #2C3E50; border-radius: 10px; margin-bottom: 10px; }
+    h1 { color: #F39C12; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- INICIALIZAÇÃO DA API (AUTOMÁTICA VIA SECRETS) ---
-# Tenta obter a chave dos secrets. Se não encontrar, avisa o administrador.
+# --- INICIALIZAÇÃO DA API ---
+# O Streamlit busca automaticamente o segredo configurado no dashboard (Settings > Secrets)
 try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-    client = Groq(api_key=GROQ_API_KEY)
-except Exception:
-    st.error("ERRO: A GROQ_API_KEY não foi configurada nos Secrets do Streamlit.")
+    if "GROQ_API_KEY" in st.secrets:
+        GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+        client = Groq(api_key=GROQ_API_KEY)
+    else:
+        st.error("ERRO: A chave 'GROQ_API_KEY' não foi encontrada nos Secrets do Streamlit.")
+        st.stop()
+except Exception as e:
+    st.error(f"Erro ao carregar as chaves de segurança: {e}")
     st.stop()
 
 # --- FUNÇÕES DE DADOS ---
@@ -36,8 +40,7 @@ def carregar_contexto_base():
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
             dados = json.load(f)
         
-        # Estrutura um resumo compacto para fornecer contexto à IA
-        # Enviamos os metadados principais dos documentos para o "cérebro" do Chatbot
+        # Estrutura um resumo para o contexto da IA (Metadados essenciais)
         resumo = []
         for d in dados:
             resumo.append(
@@ -46,73 +49,78 @@ def carregar_contexto_base():
                 f"Conceitos: {', '.join(d['palavras_chave'])}"
             )
         return "\n".join(resumo)
-    except:
-        return "Erro ao aceder à base de dados base_ppgegc.json."
+    except Exception as e:
+        return f"Erro ao acessar a base de dados: {e}"
 
 # --- INTERFACE DO CHAT ---
 st.title("🤖 Assistente de Inteligência Ecológica")
 st.markdown("""
-Este chatbot analisa em tempo real a base de dados do PPGEGC para responder a questões complexas sobre a estrutura do conhecimento no programa.
+Analise a base de dados do PPGEGC em linguagem natural. 
+Este chatbot utiliza o modelo **Llama 3.3 70B** para interpretação profunda dos dados.
 """)
 
-# Inicializa o histórico do chat
+# Inicializa o histórico do chat na sessão
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Exibe mensagens anteriores do histórico
+# Exibe o histórico de mensagens
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Lógica de interação
+# Lógica de interação principal
 if prompt := st.chat_input("Perquise a ecologia do conhecimento..."):
-    # Adiciona a pergunta ao histórico
+    # 1. Adiciona a pergunta do usuário ao histórico e exibe
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Prepara o prompt do sistema com a base de dados completa
+    # 2. Carrega a base de conhecimento dinâmica
     contexto_dados = carregar_contexto_base()
     
+    # 3. Define as instruções de comportamento da IA
     system_prompt = f"""
     Você é um consultor especializado na Ecologia do Conhecimento do PPGEGC/UFSC.
-    Sua missão é analisar os dados fornecidos e responder de forma precisa, acadêmica e perspicaz.
+    Sua missão é analisar os dados fornecidos e responder de forma precisa e acadêmica.
     
-    BASE DE CONHECIMENTO DISPONÍVEL:
+    BASE DE CONHECIMENTO ATUALIZADA:
     {contexto_dados}
     
-    INSTRUÇÕES:
-    1. Baseie-se exclusivamente nos dados acima para responder sobre pessoas, anos e temas.
-    2. Se identificar tendências (ex: aumento de temas sobre IA), mencione-as.
-    3. Seja cortês, mas direto ao ponto.
-    4. Responda sempre em Português.
+    REGRAS DE OURO:
+    - Baseie-se apenas nos dados fornecidos para falar de pessoas, anos e temas.
+    - Se não encontrar um dado específico, admita que não consta na base atual.
+    - Identifique conexões entre orientadores e conceitos quando solicitado.
+    - Use Português do Brasil com tom profissional.
     """
 
-    # Chamada para a LLM (Llama 3 70B para maior profundidade analítica)
+    # 4. Chamada para o motor de IA (Llama 3.3 via Groq)
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
         
-       try:
-            # ATUALIZADO: Mudamos de 'llama3-70b-8192' para 'llama-3.3-70b-versatile'
+        try:
+            # Modelo atualizado e estável: llama-3.3-70b-versatile
             completion = client.chat.completions.create(
-                model=MODELO_IA, 
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
                 ],
                 temperature=0.4,
-                max_tokens=1500,
+                max_tokens=2048,
                 stream=True
             )
 
-            # Efeito de streaming para a resposta
+            # Efeito de streaming (texto aparecendo aos poucos)
             for chunk in completion:
                 if chunk.choices[0].delta.content:
                     full_response += chunk.choices[0].delta.content
                     message_placeholder.markdown(full_response + "▌")
             
+            # Finaliza a exibição da resposta
             message_placeholder.markdown(full_response)
+            
+            # 5. Salva a resposta da IA no histórico
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:

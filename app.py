@@ -1,5 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_agraph import agraph, Node, Edge, Config
 import networkx as nx
 import networkx.algorithms.community as nx_comm
 from pyvis.network import Network
@@ -121,7 +122,8 @@ def calcular_sna_global(dados):
     return {node: {'Grau Absoluto': grau_abs.get(node, 0), 'Degree Centrality': deg_cent.get(node, 0), 'Betweenness': bet_cent.get(node, 0), 'Comunidade': mapa_comunidades.get(node, 'N/A'), 'Ranking Global': rank_bet.get(node, 'N/A')} for node in G.nodes()}
 
 @st.cache_resource
-def gerar_html_ego_grafo(dados_recorte, termo_foco, grau_separacao=1):
+def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1):
+    """Constrói os objetos Node e Edge para o visualizador avançado do streamlit-agraph."""
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
@@ -131,24 +133,40 @@ def gerar_html_ego_grafo(dados_recorte, termo_foco, grau_separacao=1):
         for co in tese.get('co_orientadores', []): G.add_node(co, tipo='Co-orientador'); G.add_edge(co, doc_id)
         for pk in tese.get('palavras_chave', []): G.add_node(pk, tipo='Conceito'); G.add_edge(pk, doc_id)
 
-    if termo_foco not in G.nodes(): return None
+    if termo_foco not in G.nodes(): return [], []
+    
+    # Recorta a órbita do nó
     ego_G = nx.ego_graph(G, termo_foco, radius=grau_separacao)
-    net, graus = Network(height='550px', width='100%', bgcolor='#222222', font_color='white', directed=False, cdn_resources='remote'), dict(ego_G.degree())
+    graus = dict(ego_G.degree())
 
+    nodes = []
+    edges = []
+
+    # 1. Construir os Nós (Nodes)
     for node, attrs in ego_G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
+        
+        # Lógica de Tamanho e Cor
         tam = 40 if node == termo_foco else 15 + (graus[node] * 1.5)
         cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Conceito' else '#95A5A6')
         
-        hover = f"<b>{node}</b><br>Tipo: {tipo}<br>Conexões locais: {graus[node]}"
-        if tipo == 'Documento': hover += f"<br>Ano: {attrs.get('ano')}<br>Nível: {attrs.get('nivel')}"
-        ego_G.nodes[node].update({'title': hover, 'color': cor, 'size': tam, 'shape': 'star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot'})
+        # Tooltip (Hover)
+        hover = f"Tipo: {tipo}\nConexões locais: {graus[node]}"
+        if tipo == 'Documento': hover += f"\nAno: {attrs.get('ano')}\nNível: {attrs.get('nivel')}"
+        
+        # Formas Geométricas (Agraph suporta dot, star, triangle, square, diamond, etc.)
+        formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot')
+        
+        # Rótulo inteligente (encurta títulos de teses muito longos para não poluir o visual)
+        rotulo = node[:25] + "..." if len(node) > 25 and tipo == 'Documento' else node
 
-    net.from_nx(ego_G)
-    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -8000, "springLength": 120}, "stabilization": {"enabled": true, "iterations": 50}}, "interaction": {"hover": true, "selectConnectedEdges": true}}')
-    path = "temp_ego.html"
-    net.save_graph(path)
-    return path
+        nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, title=f"{node}\n{hover}", shape=formato))
+
+    # 2. Construir as Arestas (Edges)
+    for u, v in ego_G.edges():
+        edges.append(Edge(source=u, target=v, color="#7F8C8D", width=1.5))
+
+    return nodes, edges
 
 # --- INTERFACE E EXTRAÇÃO ---
 if 'dados_completos' not in st.session_state:
@@ -275,8 +293,30 @@ if termo_ativo:
             st.metric("Betweenness", f"{metricas.get('Betweenness', 0):.4f}")
 
     st.markdown("### 🌌 Órbita de Relacionamentos")
-    grau_expansao = st.slider("Expansão do Grafo (Camadas):", 1, 3, 1)
-    with st.spinner("Desenhando..."):
-        path_ego = gerar_html_ego_grafo(dados_completos, termo_ativo, grau_expansao)
-        if path_ego:
-            with open(path_ego, 'r', encoding='utf-8') as f: components.html(f.read(), height=570)
+    grau_expansao = st.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
+    
+    with st.spinner("A mapear o ecossistema local em 3D/2D..."):
+        nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao)
+        
+        if nodes and edges:
+            # Configuração da física e do visual do motor Agraph
+            config = Config(
+                width="100%",
+                height=600,
+                directed=False, 
+                physics=True, 
+                hierarchical=False,
+                nodeHighlightBehavior=True, # Faz brilhar os vizinhos ao passar o rato
+                highlightColor="#F1C40F", # Amarelo vibrante no hover
+                collapsible=False
+            )
+            
+            # Renderiza o grafo nativo!
+            retorno_clique = agraph(nodes=nodes, edges=edges, config=config)
+            
+            # Se o utilizador clicar num nó dentro do grafo, o Streamlit deteta o ID do nó clicado!
+            if retorno_clique and retorno_clique != termo_ativo:
+                st.info(f"💡 Você clicou no nó: **{retorno_clique}**. Pesquise por este nome na caixa acima para ver os detalhes completos!")
+                
+        else:
+            st.warning("Não foi possível gerar a órbita visual para este termo.")

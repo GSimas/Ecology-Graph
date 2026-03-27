@@ -3,11 +3,11 @@ import streamlit.components.v1 as components
 from streamlit_agraph import agraph, Node, Edge, Config
 import networkx as nx
 import networkx.algorithms.community as nx_comm
-from pyvis.network import Network
 import pandas as pd
 import json
 import re
 import unicodedata
+from collections import Counter
 from sickle import Sickle
 from sickle.oaiexceptions import NoRecordsMatch
 
@@ -24,6 +24,39 @@ st.markdown("""
     button[kind="primary"] { background-color: #2ECC71 !important; color: white !important; font-weight: bold !important; border: none !important; }
     </style>
 """, unsafe_allow_html=True)
+
+# --- INICIALIZAÇÃO DE ESTADO ---
+if 'busca_tipo' not in st.session_state: 
+    st.session_state.update({'busca_tipo': "Documento", 'busca_termo': None})
+if 'macrotemas_computados' not in st.session_state:
+    st.session_state['macrotemas_computados'] = False
+
+def navegar_para(novo_tipo, novo_termo): 
+    st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
+
+# --- FUNÇÕES DE LÓGICA TEMÁTICA ---
+def aplicar_macrotemas(dados):
+    # Dicionário de classificação semântica
+    palavras_chave_temas = {
+        "Ecologia do Conhecimento & Epistemologia": ["conhecimento", "saberes", "epistemologia", "filosofia", "educação", "ensino", "escola", "pedagogia"],
+        "Ciência, Tecnologia & Engenharia": ["ciência", "tecnologia", "sistema", "modelo", "dados", "engenharia", "software", "computação", "física", "matemática", "algoritmo"],
+        "Ecologia, Tempo & Meio Ambiente": ["ecologia", "tempo", "ambiental", "natureza", "sustentabilidade", "clima", "agronomia", "florestal", "energia", "espaço"],
+        "Relações Étnico-Raciais & Decolonialidade": ["negra", "antirracista", "racismo", "decolonial", "quilombola", "indígena", "África", "raça", "identidade"],
+        "Saúde & Vida": ["saúde", "paciente", "clínica", "doença", "biologia", "medicina", "enfermagem", "odontologia", "farmácia", "corpo"],
+        "Arte, Literatura & Expressão": ["arte", "literatura", "poesia", "estética", "teatro", "performance", "narrativa", "cultura"]
+    }
+    
+    for doc in dados:
+        # Junta título e palavras-chave para análise
+        texto_analise = (doc.get('titulo', '') + " " + " ".join(doc.get('palavras_chave', []))).lower()
+        tema_atribuido = "Multidisciplinar / Transversal"
+        
+        for tema, palavras in palavras_chave_temas.items():
+            if any(palavra in texto_analise for palavra in palavras):
+                tema_atribuido = tema
+                break
+        doc['macrotema'] = tema_atribuido
+    return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
 @st.cache_data
@@ -81,9 +114,7 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
             descricoes = meta.get('description', [])
             resumo = max(descricoes, key=len) if descricoes else ""
             
-            # --- NOVO: Capturar a URL (dc.identifier.uri) ---
             identificadores = meta.get('identifier', [])
-            # Procura na lista de identificadores aquele que começa com 'http'
             url_doc = next((link for link in identificadores if str(link).startswith('http')), "")
             
             dados_extraidos.append({
@@ -97,7 +128,7 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
                 'ano': ano_real, 
                 'resumo': resumo, 
                 'programa_origem': nome_prog,
-                'url': url_doc  # --- NOVO CAMPO ADICIONADO ---
+                'url': url_doc 
             })
         except Exception: continue
     return dados_extraidos
@@ -113,6 +144,10 @@ def calcular_sna_global(dados):
         ori = d.get('orientador')
         if ori: G.add_node(ori, tipo='Orientador'); G.add_edge(doc, ori)
         for pk in d.get('palavras_chave', []): G.add_node(pk, tipo='Palavra-chave'); G.add_edge(doc, pk)
+        
+        # Injeção do Macrotema no Grafo
+        mt = d.get('macrotema')
+        if mt: G.add_node(mt, tipo='Macrotema'); G.add_edge(doc, mt)
 
     deg_cent, bet_cent, grau_abs = nx.degree_centrality(G), nx.betweenness_centrality(G), dict(G.degree())
     try: mapa_comunidades = {node: i+1 for i, comm in enumerate(nx_comm.louvain_communities(G)) for node in comm}
@@ -123,7 +158,6 @@ def calcular_sna_global(dados):
 
 @st.cache_resource
 def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_tamanho="Tamanho Fixo", _sna_global=None):
-    """Constrói os objetos para o agraph com suporte a dimensionamento SNA dinâmico."""
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
@@ -131,14 +165,14 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
         for autor in tese.get('autores', []): G.add_node(autor, tipo='Autor'); G.add_edge(autor, doc_id)
         if tese.get('orientador'): G.add_node(tese['orientador'], tipo='Orientador'); G.add_edge(tese['orientador'], doc_id)
         for co in tese.get('co_orientadores', []): G.add_node(co, tipo='Co-orientador'); G.add_edge(co, doc_id)
-        for pk in tese.get('palavras_chave', []): G.add_node(pk, tipo='Conceito'); G.add_edge(pk, doc_id)
+        for pk in tese.get('palavras_chave', []): G.add_node(pk, tipo='Palavra-chave'); G.add_edge(pk, doc_id)
+        if tese.get('macrotema'): G.add_node(tese['macrotema'], tipo='Macrotema'); G.add_edge(tese['macrotema'], doc_id)
 
     if termo_foco not in G.nodes(): return [], []
     
     ego_G = nx.ego_graph(G, termo_foco, radius=grau_separacao)
     graus_locais = dict(ego_G.degree())
     
-    # Preparação para normalização de tamanhos SNA
     if _sna_global and metodo_tamanho != "Tamanho Fixo":
         max_metrica = max([_sna_global.get(n, {}).get(metodo_tamanho, 1) for n in ego_G.nodes()])
         if max_metrica == 0: max_metrica = 1
@@ -148,9 +182,8 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
     for node, attrs in ego_G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
         
-        # LÓGICA DE TAMANHO DINÂMICO
         if node == termo_foco:
-            tam = 45 # O Sol (centro) é sempre o maior
+            tam = 45 
         else:
             if metodo_tamanho == "Tamanho Fixo":
                 tam = 15 + (graus_locais[node] * 1.5)
@@ -160,8 +193,9 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
             else:
                 tam = 15
                 
-        cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Conceito' else '#95A5A6')
-        formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot')
+        # Estilização estendida para incluir Macrotema
+        cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Palavra-chave' else '#9B59B6' if tipo == 'Macrotema' else '#95A5A6')
+        formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Palavra-chave' else 'hexagon' if tipo == 'Macrotema' else 'dot')
         
         hover = f"Tipo: {tipo}\nGrau Local: {graus_locais[node]}"
         if _sna_global and node in _sna_global:
@@ -175,10 +209,7 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
 
     return nodes, edges
 
-
-
-
-# --- INTERFACE E EXTRAÇÃO ---
+# --- INTERFACE DE EXTRAÇÃO ---
 if 'dados_completos' not in st.session_state:
     st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
     colecoes_disponiveis = carregar_catalogo_programas()
@@ -204,7 +235,11 @@ if 'dados_completos' not in st.session_state:
             
             if dados_agregados:
                 status_box.success("✅ Extração Concluída!")
-                st.session_state.update({'dados_completos': dados_agregados, 'nome_programa': prog if len(programas_selecionados)==1 else f"Análise Multidisciplinar ({len(programas_selecionados)} Programas)"})
+                st.session_state.update({
+                    'dados_completos': dados_agregados, 
+                    'nome_programa': prog if len(programas_selecionados)==1 else f"Análise Multidisciplinar ({len(programas_selecionados)} Programas)",
+                    'macrotemas_computados': False
+                })
                 st.rerun() 
     st.stop()
 
@@ -215,9 +250,10 @@ st.subheader(f"Base: {st.session_state['nome_programa']}")
 
 if st.sidebar.button("🔄 Nova Extração", type="primary"):
     del st.session_state['dados_completos']
+    st.session_state['macrotemas_computados'] = False
     st.rerun()
 
-# KPIs
+# KPIs Básicos
 autores_set = set([a for d in dados_completos for a in d.get('autores', [])])
 orientadores_set = set([d.get('orientador') for d in dados_completos if d.get('orientador')])
 coorientadores_set = set([co for d in dados_completos for co in d.get('co_orientadores', [])])
@@ -236,18 +272,51 @@ c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 
 st.markdown("---")
 
+# --- MÓDULO DE MACROTEMAS ---
+st.header("🧠 Análise Temática Estrutural")
 
+if not st.session_state['macrotemas_computados']:
+    st.info("Os documentos extraídos ainda não possuem categorização temática.")
+    if st.button("Computar Macrotemas Agora", type="primary"):
+        with st.spinner("Analisando vocabulário e atribuindo macrotemas..."):
+            st.session_state['dados_completos'] = aplicar_macrotemas(dados_completos)
+            st.session_state['macrotemas_computados'] = True
+            
+            # Limpar caches de grafos para forçar a renderização dos novos nós de Macrotema
+            calcular_sna_global.clear()
+            gerar_nodos_agraph.clear()
+            st.rerun()
+else:
+    # Exibir Tabela de Macrotemas
+    todos_temas = [d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos]
+    contagem_temas = Counter(todos_temas)
+    df_temas = pd.DataFrame(contagem_temas.items(), columns=["Macrotema", "Quantidade de Documentos"]).sort_values(by="Quantidade de Documentos", ascending=False)
+    
+    col_tabela, col_vazia = st.columns([2, 1])
+    with col_tabela:
+        st.dataframe(df_temas, use_container_width=True, hide_index=True)
+
+st.markdown("---")
 
 # --- MOTOR DE BUSCA (EGO-GRAPH) ---
-st.header("🔍 Motor de Busca e Dossiê (Search Engine)")
-
-if 'busca_tipo' not in st.session_state: st.session_state.update({'busca_tipo': "Documento", 'busca_termo': None})
-def navegar_para(novo_tipo, novo_termo): st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
+st.header("🔍 Motor de Busca e Dossiê")
 
 sna_global = calcular_sna_global(dados_completos)
-tipo_busca = st.radio("Procurar:", ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"], horizontal=True, key="busca_tipo")
 
-opcoes = [d['titulo'] for d in dados_completos] if tipo_busca == "Documento" else list(autores_set) if tipo_busca == "Autor" else list(orientadores_set) if tipo_busca == "Orientador" else list(coorientadores_set) if tipo_busca == "Co-orientador" else list(keywords_set)
+# Define as opções de busca baseadas no estado da aplicação
+opcoes_busca = ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"]
+if st.session_state['macrotemas_computados']:
+    opcoes_busca.append("Macrotema")
+
+tipo_busca = st.radio("Procurar por Entidade:", opcoes_busca, horizontal=True, key="busca_tipo")
+
+# Prepara a lista de opções para o Selectbox
+if tipo_busca == "Documento": opcoes = [d['titulo'] for d in dados_completos]
+elif tipo_busca == "Autor": opcoes = list(autores_set)
+elif tipo_busca == "Orientador": opcoes = list(orientadores_set)
+elif tipo_busca == "Co-orientador": opcoes = list(coorientadores_set)
+elif tipo_busca == "Palavra-chave": opcoes = list(keywords_set)
+elif tipo_busca == "Macrotema": opcoes = list(set([d.get('macrotema') for d in dados_completos if d.get('macrotema')]))
 
 if st.session_state['busca_termo'] not in opcoes: st.session_state['busca_termo'] = None
 termo_selecionado = st.selectbox("Selecione:", sorted(opcoes), index=sorted(opcoes).index(st.session_state['busca_termo']) if st.session_state['busca_termo'] in opcoes else None, placeholder="Pesquise aqui...")
@@ -262,17 +331,21 @@ if termo_ativo:
     col_info, col_sna = st.columns([2, 1])
     with col_info:
         st.info(f"**{termo_ativo}**")
+        
         if tipo_busca == "Documento":
             doc = next((d for d in dados_completos if d['titulo'] == termo_ativo), {})
             
-            # --- NOVO: Exibição dos Detalhes e URL ---
             st.write(f"**Ano:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')} | **Programa:** {doc.get('programa_origem', 'N/A')}")
             
             if doc.get('url'):
                 st.markdown(f"🔗 **Link Oficial na UFSC:** [{doc['url']}]({doc['url']})")
-                st.markdown("<br>", unsafe_allow_html=True)
-            
-            # Botões interativos
+                
+            # TAG do Macrotema clicável
+            if st.session_state['macrotemas_computados']:
+                tema = doc.get('macrotema', 'Multidisciplinar / Transversal')
+                st.write("**Macrotema Classificado:**")
+                st.button(f"🏷️ {tema}", on_click=navegar_para, args=("Macrotema", tema))
+                
             st.write("**Rede de Autoria e Orientação:**")
             for a in doc.get('autores', []): 
                 st.button(f"👤 {a}", on_click=navegar_para, args=("Autor", a))
@@ -287,6 +360,7 @@ if termo_ativo:
                 
             with st.expander("Ler Resumo (Abstract)"): 
                 st.write(doc.get('resumo', 'Resumo não disponível.'))
+                
         elif tipo_busca == "Autor":
             docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
             for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
@@ -296,6 +370,10 @@ if termo_ativo:
         elif tipo_busca == "Palavra-chave":
             docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
             for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
+        elif tipo_busca == "Macrotema":
+            docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
+            st.write(f"**Documentos encontrados na categoria ({len(docs)}):**")
+            for d in docs: st.button(f"📄 {d['titulo']}", key=f"btn_mt_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
 
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})
@@ -311,7 +389,6 @@ if termo_ativo:
     metodo_tamanho_ego = col_orb2.selectbox("Tamanho dos Nós na Órbita:", ["Tamanho Fixo", "Grau Absoluto", "Degree Centrality", "Betweenness"])
     
     with st.spinner("A mapear o ecossistema local em 3D/2D..."):
-        # Passamos as métricas globais para a função
         nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao, metodo_tamanho_ego, sna_global)
         
         if nodes and edges:
@@ -322,5 +399,3 @@ if termo_ativo:
                 st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
         else:
             st.warning("Não foi possível gerar a órbita visual para este termo.")
-
-

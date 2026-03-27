@@ -73,7 +73,7 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 @st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
 def obter_programas_ufsc():
-    """Conecta ao repositório da UFSC e filtra as Comunidades Fantasmas, mantendo apenas as Coleções Ativas."""
+    """Conecta ao repositório, limpa os nomes, agrupa clones e mantém apenas a Coleção Original (Menor ID)."""
     try:
         sickle = Sickle('https://repositorio.ufsc.br/oai/request')
         sets = sickle.ListSets()
@@ -81,40 +81,54 @@ def obter_programas_ufsc():
         
         for s in sets:
             if s.setSpec.startswith('col_'):
-                nome_original = s.setName
+                nome_original = s.setName.strip()
                 nome_norm = ''.join(c for c in unicodedata.normalize('NFD', nome_original.lower()) if unicodedata.category(c) != 'Mn')
                 
-                # Filtro Lexical: Pega tudo de Pós-Graduação
+                # Filtro Lexical: Apenas Pós-Graduação
                 if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm:
                     
-                    # O "Pulo do Gato": Pastas com PDFs reais geralmente têm "Tese" ou "Dissertação" no nome original.
-                    # As pastas "Fantasma" (Comunidades) têm apenas o nome do curso.
-                    is_colecao_ativa = "tese" in nome_norm or "disserta" in nome_norm
+                    # Removemos os prefixos padrão para forçar o agrupamento de nomes iguais
+                    nome_limpo = nome_original
+                    prefixos = [
+                        "Teses e Dissertações - ", "Teses e dissertações - ", 
+                        "Teses de Doutorado - ", "Dissertações de Mestrado - ",
+                        "Teses - ", "Dissertações - "
+                    ]
+                    for p in prefixos:
+                        if nome_limpo.startswith(p):
+                            nome_limpo = nome_limpo.replace(p, "").strip()
                     
-                    # Limpa os prefixos para conseguirmos agrupar a pasta fantasma com a pasta real do mesmo curso
-                    nome_limpo = re.sub(r'^(Teses e Dissertações|Teses de Doutorado|Dissertações de Mestrado)\s*-\s*', '', nome_original, flags=re.IGNORECASE).strip()
-                    
+                    # Extrai o ID numérico final (ex: col_123456789_75141 -> 75141)
+                    try:
+                        id_num = int(s.setSpec.split('_')[-1])
+                    except ValueError:
+                        id_num = 9999999 # Fallback de segurança
+                        
                     if nome_limpo not in colecoes_temporarias:
                         colecoes_temporarias[nome_limpo] = []
                         
+                    # Guarda todas as variantes de um mesmo curso
                     colecoes_temporarias[nome_limpo].append({
                         'id': s.setSpec,
-                        'is_ativa': is_colecao_ativa,
-                        'id_num': s.setSpec.split('_')[-1]
+                        'id_num': id_num
                     })
                     
-        # Constrói a lista final eliminando os fantasmas
+        # Constrói a lista final eliminando os clones recentes/vazios
         colecoes_finais = {}
         for nome_limpo, lista_sets in colecoes_temporarias.items():
-            # Se houver uma pasta ativa (com teses), descartamos a pasta fantasma
-            ativas = [x for x in lista_sets if x['is_ativa']]
-            selecionados = ativas if ativas else lista_sets
             
-            for item in selecionados:
-                # O nome fica limpo, mas mantemos o ID para segurança contra colisões
-                nome_exibicao = f"{nome_limpo} (ID: {item['id_num']})"
-                colecoes_finais[nome_exibicao] = item['id']
-                
+            # ORDENA POR ID CRESCENTE. 
+            # A coleção raiz/verdadeira no DSpace tem sempre o menor ID (ex: 75141).
+            # As coleções na casa dos 214xxx são fantasmas estruturais.
+            lista_sets_ordenada = sorted(lista_sets, key=lambda x: x['id_num'])
+            
+            # Pega estritamente a primeira da lista (a original)
+            item_oficial = lista_sets_ordenada[0]
+            
+            # Formata o nome para a interface, mantendo a indicação do ID correto
+            nome_exibicao = f"{nome_limpo} (ID Oficial: {item_oficial['id_num']})"
+            colecoes_finais[nome_exibicao] = item_oficial['id']
+            
         return dict(sorted(colecoes_finais.items()))
     except Exception as e:
         st.error(f"Erro ao conectar com a UFSC: {e}")

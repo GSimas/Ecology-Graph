@@ -579,16 +579,27 @@ c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 st.markdown("---")
 
 
-# === MOTOR DE BUSCA (SEARCH ENGINE) ===
+# === MOTOR DE BUSCA E NAVEGAÇÃO EM GRAFO (SEARCH ENGINE) ===
 st.header("🔍 Motor de Busca e Dossiê (Search Engine)")
-st.markdown("Pesquise qualquer entidade na base para ver o seu raio-x completo e posição na rede de conhecimento.")
+st.markdown("Navegue pela rede! **Clique em qualquer autor, orientador ou documento nos resultados** para viajar através do conhecimento.")
+
+# 1. Configuração da Memória de Navegação (Session State)
+if 'busca_tipo' not in st.session_state:
+    st.session_state['busca_tipo'] = "Documento"
+if 'busca_termo' not in st.session_state:
+    st.session_state['busca_termo'] = None
+
+# Callback que muda o foco da pesquisa quando um botão é clicado
+def navegar_para(novo_tipo, novo_termo):
+    st.session_state['busca_tipo'] = novo_tipo
+    st.session_state['busca_termo'] = novo_termo
 
 # Calcula a inteligência da rede em background
 sna_global = calcular_sna_global(dados_completos)
 
-tipo_busca = st.radio("O que deseja procurar?", ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"], horizontal=True)
+# 2. Interface Principal de Busca
+tipo_busca = st.radio("O que deseja procurar?", ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"], horizontal=True, key="busca_tipo")
 
-# Popula as opções com base na escolha
 opcoes_busca = []
 if tipo_busca == "Documento": opcoes_busca = [d['titulo'] for d in dados_completos]
 elif tipo_busca == "Autor": opcoes_busca = list(autores_set)
@@ -596,79 +607,122 @@ elif tipo_busca == "Orientador": opcoes_busca = list(orientadores_set)
 elif tipo_busca == "Co-orientador": opcoes_busca = list(coorientadores_set)
 elif tipo_busca == "Palavra-chave": opcoes_busca = list(keywords_set)
 
-# A caixa de pesquisa mágica (autocomplete)
-termo_busca = st.selectbox(f"Digite o nome do(a) {tipo_busca.lower()}:", sorted(opcoes_busca), index=None, placeholder=f"Escreva aqui para pesquisar...")
+# Se mudarmos o tipo de busca (ex: de Autor para Documento), reseta o termo atual
+if st.session_state['busca_termo'] not in opcoes_busca:
+    st.session_state['busca_termo'] = None
 
-if termo_busca:
+# Encontra o índice do termo atual para a caixa de pesquisa manter o valor correto
+idx_termo = sorted(opcoes_busca).index(st.session_state['busca_termo']) if st.session_state['busca_termo'] in opcoes_busca else None
+
+termo_selecionado = st.selectbox(
+    f"Selecione ou digite o nome do(a) {tipo_busca.lower()}:", 
+    sorted(opcoes_busca), 
+    index=idx_termo,
+    placeholder=f"Escreva aqui para pesquisar..."
+)
+
+# Se o utilizador pesquisar manualmente na caixa, atualizamos o sistema
+if termo_selecionado != st.session_state['busca_termo']:
+    st.session_state['busca_termo'] = termo_selecionado
+    st.rerun()
+
+termo_ativo = st.session_state['busca_termo']
+
+# 3. Exibição dos Detalhes e Hiperligações
+if termo_ativo:
     st.markdown("### 📑 Resultado da Análise")
     col_info, col_sna = st.columns([2, 1])
     
     with col_info:
-        st.markdown(f"#### Detalhamento: {tipo_busca}")
-        st.markdown(f"**{termo_busca}**")
+        st.markdown(f"#### Perfil: {tipo_busca}")
+        st.info(f"**{termo_ativo}**")
         st.markdown("---")
         
-        # Lógica de exibição dependendo do tipo
+        # --- LÓGICA DE DETALHES CLICÁVEIS ---
         if tipo_busca == "Documento":
-            doc = next((d for d in dados_completos if d['titulo'] == termo_busca), None)
+            doc = next((d for d in dados_completos if d['titulo'] == termo_ativo), None)
             if doc:
-                st.write(f"**Ano da Defesa:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')}")
-                st.write(f"**Programa de Origem:** {doc.get('programa_origem', 'N/A')}")
-                st.write(f"**Autor(es):** {', '.join(doc.get('autores', []))}")
-                st.write(f"**Orientador:** {doc.get('orientador', 'N/A')}")
-                if doc.get('possui_coorientador'):
-                    st.write(f"**Co-orientador(es):** {', '.join(doc.get('co_orientadores', []))}")
-                st.write(f"**Palavras-chave:** {', '.join(doc.get('palavras_chave', []))}")
+                st.write(f"**Ano:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')} | **Programa:** {doc.get('programa_origem', 'N/A')}")
+                
+                st.write("**Autor(es):**")
+                for i, a in enumerate(doc.get('autores', [])): 
+                    st.button(f"👤 {a}", key=f"doc_aut_{i}_{a}", on_click=navegar_para, args=("Autor", a))
+                    
+                if doc.get('orientador'):
+                    st.write("**Orientador:**")
+                    st.button(f"🏫 {doc['orientador']}", key=f"doc_ori_{doc['orientador']}", on_click=navegar_para, args=("Orientador", doc['orientador']))
+                    
+                if doc.get('co_orientadores'):
+                    st.write("**Co-orientador(es):**")
+                    for i, co in enumerate(doc.get('co_orientadores', [])): 
+                        st.button(f"🤝 {co}", key=f"doc_co_{i}_{co}", on_click=navegar_para, args=("Co-orientador", co))
+                        
+                st.write("**Palavras-chave:**")
+                for i, pk in enumerate(doc.get('palavras_chave', [])): 
+                    st.button(f"💡 {pk}", key=f"doc_pk_{i}_{pk}", on_click=navegar_para, args=("Palavra-chave", pk))
+                    
                 with st.expander("Ler Resumo (Abstract)"):
                     st.write(doc.get('resumo', 'Resumo não disponível.'))
                     
         elif tipo_busca == "Autor":
-            docs = [d for d in dados_completos if termo_busca in d.get('autores', [])]
+            docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
             oris = set([d.get('orientador') for d in docs if d.get('orientador')])
             co_oris = set([co for d in docs for co in d.get('co_orientadores', [])])
-            st.write(f"**Orientadores que teve:** {', '.join(oris) if oris else 'Nenhum'}")
-            st.write(f"**Co-orientadores:** {', '.join(co_oris) if co_oris else 'Nenhum'}")
+            
+            if oris:
+                st.write("**Orientadores que teve:**")
+                for i, o in enumerate(oris): st.button(f"🏫 {o}", key=f"aut_ori_{i}_{o}", on_click=navegar_para, args=("Orientador", o))
+            if co_oris:
+                st.write("**Co-orientadores:**")
+                for i, co in enumerate(co_oris): st.button(f"🤝 {co}", key=f"aut_co_{i}_{co}", on_click=navegar_para, args=("Co-orientador", co))
+            
             st.write(f"**Documentos de Autoria ({len(docs)}):**")
-            for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+            for i, d in enumerate(docs): 
+                st.button(f"📄 {d['titulo']} ({d.get('ano')})", key=f"aut_doc_{i}_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Orientador":
-            docs = [d for d in dados_completos if d.get('orientador') == termo_busca]
+            docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
             pupilos = set([a for d in docs for a in d.get('autores', [])])
-            st.write(f"**Volume de Orientações:** {len(docs)} trabalhos")
-            st.write(f"**Pupilos (Autores orientados):** {', '.join(pupilos)}")
-            with st.expander("Ver Trabalhos Orientados"):
-                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+            
+            st.write(f"**Pupilos (Autores orientados - {len(pupilos)}):**")
+            for i, p in enumerate(pupilos): 
+                st.button(f"👤 {p}", key=f"ori_pup_{i}_{p}", on_click=navegar_para, args=("Autor", p))
+            
+            st.write(f"**Trabalhos Orientados ({len(docs)}):**")
+            for i, d in enumerate(docs): 
+                st.button(f"📄 {d['titulo']} ({d.get('ano')})", key=f"ori_doc_{i}_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
                 
         elif tipo_busca == "Co-orientador":
-            docs = [d for d in dados_completos if termo_busca in d.get('co_orientadores', [])]
-            st.write(f"**Volume de Co-orientações:** {len(docs)} trabalhos")
-            with st.expander("Ver Trabalhos Co-orientados"):
-                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+            docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+            st.write(f"**Trabalhos Co-orientados ({len(docs)}):**")
+            for i, d in enumerate(docs): 
+                st.button(f"📄 {d['titulo']} ({d.get('ano')})", key=f"coori_doc_{i}_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
                 
         elif tipo_busca == "Palavra-chave":
-            docs = [d for d in dados_completos if termo_busca in d.get('palavras_chave', [])]
-            st.write(f"**Frequência na Base:** Aparece em {len(docs)} documentos")
-            with st.expander("Ver Documentos que utilizam este conceito"):
-                for d in docs: st.caption(f"- {d['titulo']} ({d.get('ano')})")
+            docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
+            st.write(f"**Aparece em {len(docs)} documentos:**")
+            for i, d in enumerate(docs): 
+                st.button(f"📄 {d['titulo']} ({d.get('ano')})", key=f"pk_doc_{i}_{d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))
 
     with col_sna:
         st.markdown("#### 🕸️ Métricas de Rede (SNA)")
-        metricas = sna_global.get(termo_busca)
+        metricas = sna_global.get(termo_ativo)
         
         if metricas:
-            # Cards pequenos para as métricas
-            st.info(f"**Posição no Ranking Global:** #{metricas['Ranking Global']}")
+            st.info(f"**Ranking de Influência:** #{metricas['Ranking Global']}")
             st.success(f"**Comunidade (Cluster):** {metricas['Comunidade']}")
             
             st.metric("Grau Absoluto (Conexões)", metricas['Grau Absoluto'])
-            st.metric("Betweenness (Poder de Ponte)", f"{metricas['Betweenness']:.4f}")
-            st.metric("Centralidade (Degree)", f"{metricas['Degree Centrality']:.4f}")
+            st.metric("Betweenness (Ponto de Ponte)", f"{metricas['Betweenness']:.4f}")
+            st.metric("Degree Centrality (Volume)", f"{metricas['Degree Centrality']:.4f}")
             
-            st.caption("A Comunidade indica o grupo temático/cluster matemático a que este nó pertence através do algoritmo de Louvain.")
+            st.caption("A Comunidade indica o agrupamento matemático/temático a que este nó pertence na rede.")
         else:
-            st.warning("Métricas SNA não disponíveis para este item isolado.")
+            st.warning("Métricas SNA não disponíveis isoladamente.")
 
 st.markdown("---")
+
+
 
 # === SEÇÃO 1: GRAFO INTERATIVO GERAL ===
 st.header("🕸️ 1. Topologia e Grafo Interativo")

@@ -93,7 +93,7 @@ GRUPOS:
                 {"role": "user", "content": prompt_usuario}
             ],
             model="llama-3.1-70b-versatile", # Modelo mais robusto que o 8b
-            temperature=0.7, # Aumentamos para dar mais "vida" aos nomes
+            temperature=0.4, # Aumentamos para dar mais "vida" aos nomes
         )
         
         # Parseando a lista numerada que o LLM devolve

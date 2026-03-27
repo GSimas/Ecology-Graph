@@ -213,7 +213,7 @@ with tab1:
             st.info("Nenhuma explosão detetada com estes parâmetros.")
 
 # --- ABA 2: GENEALOGIA ACADÉMICA ---
-with aba2:
+with tab2:
     st.subheader("DNA Académico: Linhagens e Dinastias do PPGEGC")
     st.markdown("""
     Este grafo direcionado revela como o conhecimento flui através das gerações. 

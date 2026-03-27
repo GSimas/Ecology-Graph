@@ -118,6 +118,53 @@ GRUPOS DE PALAVRAS:
     return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
+def gerar_tabela_entidades_por_macrotema(docs):
+    """Gera uma tabela consolidando Orientadores, Co-orientadores e Palavras-chave associados a um Macrotema."""
+    tabela = []
+    for d in docs:
+        nivel = d.get('nivel_academico', 'Outros')
+        
+        # Extrai o Orientador
+        if d.get('orientador'):
+            tabela.append({'Entidade': d['orientador'], 'Tipo': 'Orientador', 'Nível': nivel})
+            
+        # Extrai os Co-orientadores
+        for co in d.get('co_orientadores', []):
+            tabela.append({'Entidade': co, 'Tipo': 'Co-orientador', 'Nível': nivel})
+            
+        # Extrai as Palavras-chave
+        for pk in d.get('palavras_chave', []):
+            tabela.append({'Entidade': pk, 'Tipo': 'Palavra-chave', 'Nível': nivel})
+            
+    if not tabela:
+        return
+        
+    df = pd.DataFrame(tabela)
+    # Tabela dinâmica cruzando a Entidade e seu Tipo com os Níveis dos documentos
+    resumo = pd.crosstab(index=[df['Entidade'], df['Tipo']], columns=df['Nível']).reset_index()
+    
+    # Garante as colunas básicas
+    if 'Tese (Doutorado)' not in resumo.columns: resumo['Tese (Doutorado)'] = 0
+    if 'Dissertação (Mestrado)' not in resumo.columns: resumo['Dissertação (Mestrado)'] = 0
+    if 'Outros' not in resumo.columns: resumo['Outros'] = 0
+    
+    # Renomeia para ficar legível
+    resumo = resumo.rename(columns={
+        'Tese (Doutorado)': 'Teses',
+        'Dissertação (Mestrado)': 'Dissertações'
+    })
+    
+    # Calcula coluna Total
+    resumo['Total'] = resumo['Teses'] + resumo['Dissertações'] + resumo['Outros']
+    
+    # Reordena as colunas e ordena do maior para o menor total
+    resumo = resumo[['Entidade', 'Tipo', 'Teses', 'Dissertações', 'Total']].sort_values(by='Total', ascending=False)
+    
+    st.write("**📊 Entidades conectadas a este Macrotema:**")
+    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
 @st.cache_data
 def carregar_catalogo_programas():
     try:
@@ -489,8 +536,13 @@ if termo_ativo:
             
         elif tipo_busca == "Macrotema":
             docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
+            
+            # --- CHAMA A NOVA TABELA AQUI ---
+            gerar_tabela_entidades_por_macrotema(docs)
+            
             st.write(f"**Documentos encontrados na categoria ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            for i, d in enumerate(docs): 
+                st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
 
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})

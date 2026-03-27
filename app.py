@@ -40,10 +40,16 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 def aplicar_macrotemas(dados, api_key, num_topicos=12):
-    # 1. Configuração da API do Gemini
+    # 1. Configuração da API
     genai.configure(api_key=api_key)
-    # O modelo Flash é o mais rápido e eficiente para tarefas de classificação e texto
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    
+    # Tentamos o nome mais estável do modelo. 
+    # Se gemini-1.5-flash der erro, o bloco try/except abaixo vai gerenciar.
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash') 
+    except Exception:
+        # Fallback para a versão estável alternativa
+        model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
     
     # 2. SUPER-LIMPEZA (Mantemos a mesma peneira rigorosa que construímos)
     sujeira_academica = [
@@ -98,9 +104,16 @@ Diretrizes rigorosas:
 GRUPOS DE PALAVRAS:
 {contexto}"""
 
+    # 2. Na hora de gerar o conteúdo (dentro do bloco try/except da geração):
     try:
-        # Chamada à API do Gemini
-        response = model.generate_content(prompt_humanizado)
+        # Adicionamos uma pequena configuração de segurança para evitar bloqueios bobos
+        response = model.generate_content(
+            prompt_humanizado,
+            generation_config=genai.types.GenerationConfig(
+                candidate_count=1,
+                temperature=0.4,
+            )
+        )
         texto_resposta = response.text.strip()
         
         # Limpeza da lista retornada
@@ -111,9 +124,12 @@ GRUPOS DE PALAVRAS:
         if len(nomes_finais) < num_topicos:
             raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes. Esperados: {num_topicos}")
 
+    # O resto do processamento de nomes...
     except Exception as e:
-        # Novo Plano B elegante caso falte internet ou a API caia
-        st.warning(f"Aviso da IA: Usando extração direta de termos (Erro: {e})")
+        # Se der erro 404 de novo, vamos listar os modelos disponíveis no log para você
+        modelos_disponiveis = [m.name for m in genai.list_models()]
+        st.error(f"Erro na API Gemini. Modelos detectados no seu ambiente: {modelos_disponiveis[:5]}")
+        # Plano B (Extração direta)
         nomes_finais = []
         for c in clusters:
             palavras = c.split(': ')[1].split(', ')

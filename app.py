@@ -5,6 +5,8 @@ import networkx.algorithms.community as nx_comm
 from pyvis.network import Network
 import pandas as pd
 import plotly.express as px
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 import json
 import time
 
@@ -37,12 +39,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- INICIALIZAÇÃO DE ESTADO ---
-if 'grafo_pronto' not in st.session_state:
-    st.session_state['grafo_pronto'] = False
-if 'tabela_pronta' not in st.session_state:
-    st.session_state['tabela_pronta'] = False
-if 'grafico_tempo_pronto' not in st.session_state:
-    st.session_state['grafico_tempo_pronto'] = False
+if 'grafo_pronto' not in st.session_state: st.session_state['grafo_pronto'] = False
+if 'tabela_pronta' not in st.session_state: st.session_state['tabela_pronta'] = False
 
 # --- FUNÇÕES DE BACK-END INDEPENDENTES ---
 @st.cache_data
@@ -85,29 +83,17 @@ def obter_dataframe_metricas(dados_recorte):
     return pd.DataFrame(lista)
 
 @st.cache_data
-def preparar_dados_temporais(dados):
-    """Achata a lista de palavras-chave para criar uma linha do tempo (Ano x Conceito)."""
-    registros = []
-    for d in dados:
-        ano = d.get('ano')
-        nivel = d.get('nivel_academico', 'Outros / Não Especificado')
-        
-        # Filtra registros sem ano válido
-        if not ano or ano == 'Sem ano': 
-            continue
-        try:
-            ano_int = int(ano)
-        except ValueError:
-            continue
-            
-        for pk in d.get('palavras_chave', []):
-            registros.append({
-                'Ano': ano_int, 
-                'Conceito': pk, 
-                'Nível Acadêmico': nivel
-            })
-            
-    return pd.DataFrame(registros)
+def preparar_dados_base_df(dados):
+    """Gera um DataFrame base limpo para os gráficos de tempo e nuvem."""
+    df = pd.DataFrame(dados)
+    # Limpa e converte o Ano para numérico
+    df['Ano'] = pd.to_numeric(df['ano'], errors='coerce')
+    df = df.dropna(subset=['Ano'])
+    df['Ano'] = df['Ano'].astype(int)
+    # Preenche vazios
+    df['nivel_academico'] = df['nivel_academico'].fillna('Outros / Não Especificado')
+    df['titulo'] = df['titulo'].fillna('')
+    return df
 
 @st.cache_resource
 def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
@@ -183,7 +169,7 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
 # --- CONSTRUÇÃO DA INTERFACE FRONT-END ---
 
 st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
-st.markdown("> Esta plataforma mapeia e quantifica as intrincadas relações entre teses, autores, orientadores e conceitos através da Ciência de Redes e Análise Histórica.")
+st.markdown("> Plataforma de inteligência bibliométrica para mapeamento de redes acadêmicas, evolução histórica e análise topológica estrutural do conhecimento.")
 st.markdown("---")
 
 dados_completos = carregar_dados_locais()
@@ -200,6 +186,9 @@ total_filtrado = len(dados_filtrados_globalmente)
 if total_filtrado == 0:
     st.warning("Nenhum documento encontrado com os filtros selecionados.")
     st.stop()
+
+# Prepara DataFrame Geral
+df_geral = preparar_dados_base_df(dados_filtrados_globalmente)
 
 # --- SEÇÃO 1: GRAFO INTERATIVO ---
 st.header("🕸️ Topologia e Grafo Interativo")
@@ -244,10 +233,10 @@ with st.form("form_tabela"):
         top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
 
     col_t3, col_t4, col_t5 = st.columns(3)
-    categorias_disponiveis = ["Documento", "Autor", "Orientador", "Conceito"]
+    categorias_disp = ["Documento", "Autor", "Orientador", "Conceito"]
     todas_metricas = ["Grau Absoluto", "Degree Centrality", "Betweenness"]
     
-    with col_t3: cat_sel = st.multiselect("Categorias a incluir:", categorias_disponiveis, default=["Orientador", "Conceito"])
+    with col_t3: cat_sel = st.multiselect("Categorias a incluir:", categorias_disp, default=["Orientador", "Conceito"])
     with col_t4: met_sel = st.multiselect("Métricas a exibir:", todas_metricas, default=["Grau Absoluto", "Betweenness"])
     with col_t5: met_ord = st.selectbox("Ordenar o Ranking por:", met_sel if met_sel else todas_metricas)
         
@@ -255,15 +244,11 @@ with st.form("form_tabela"):
 
 if btn_render_tabela:
     if met_sel and cat_sel:
-        barra_progresso = st.progress(0, text="Processando matemática de redes...")
         df_completo = obter_dataframe_metricas(dados_filtrados_globalmente[:n_registros_tabela])
-        barra_progresso.progress(80, text="Ordenando o ranking...")
         df_top_x = df_completo[df_completo['Categoria'].isin(cat_sel)].sort_values(by=met_ord, ascending=False).head(top_x)
-        
         st.session_state['df_top_x'] = df_top_x
         st.session_state['colunas_finais'] = ['Entidade (Nó)', 'Categoria'] + met_sel
         st.session_state['tabela_pronta'] = True
-        barra_progresso.empty()
 
 if st.session_state['tabela_pronta']:
     df_exibicao = st.session_state['df_top_x'].copy()
@@ -274,76 +259,122 @@ if st.session_state['tabela_pronta']:
 
 st.markdown("---")
 
-# --- SEÇÃO 3: EVOLUÇÃO CRONOLÓGICA ---
-st.header("📈 Evolução Histórica dos Saberes")
-st.write("Acompanhe como as palavras-chave (conceitos) ganharam ou perderam relevância ao longo dos anos no programa.")
+# --- SEÇÃO 3 & 4: DIMENSÃO HISTÓRICA E DISCURSIVA ---
+st.header("📈 Dimensão Histórica e Lexical")
+st.write("Explore a evolução das publicações ao longo do tempo e identifique os termos mais frequentes nos títulos ou palavras-chave.")
 
-# Prepara os dados temporais (lê o JSON inteiro para oferecer todas as opções)
-df_temporal = preparar_dados_temporais(dados_completos)
-
-if not df_temporal.empty:
-    min_ano = int(df_temporal['Ano'].min())
-    max_ano = int(df_temporal['Ano'].max())
-    todos_conceitos = sorted(df_temporal['Conceito'].unique().tolist())
+if not df_geral.empty:
+    min_ano = int(df_geral['Ano'].min())
+    max_ano = int(df_geral['Ano'].max())
     
-    # Identifica os top 5 conceitos mais frequentes da história para virem marcados por padrão
-    top_5_conceitos = df_temporal['Conceito'].value_counts().head(5).index.tolist()
+    # Extrai lista unificada de conceitos para os filtros
+    lista_todos_conceitos = []
+    for c_list in df_geral['palavras_chave']:
+        lista_todos_conceitos.extend(c_list)
+    conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
+    top_5_conceitos = pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist()
 
-    with st.form("form_temporal"):
-        col_e1, col_e2 = st.columns([1, 2])
-        
-        with col_e1:
-            anos_selecionados = st.slider("Intervalo de Anos:", min_value=min_ano, max_value=max_ano, value=(min_ano, max_ano), step=1)
-            niveis_grafico = st.multiselect("Nível Acadêmico no Gráfico:", options=niveis_disponiveis, default=niveis_disponiveis)
+    with st.form("form_historico"):
+        st.subheader("Filtros Temporais e Gráficos")
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            anos_sel = st.slider("Intervalo de Anos:", min_ano, max_ano, (min_ano, max_ano), 1)
+            # Agrupamento de Níveis Acadêmicos
+            agrupar_niveis = st.radio("Visão dos Níveis Acadêmicos no Gráfico:", 
+                                      ["Agrupar tudo numa única linha (Total)", "Separar Teses e Dissertações"], 
+                                      horizontal=True)
             
-        with col_e2:
-            conceitos_selecionados = st.multiselect(
-                "Conceitos para comparar (Selecione até 10 para não poluir o visual):", 
-                options=todos_conceitos, 
-                default=top_5_conceitos
-            )
+        with col_h2:
+            modo_grafico = st.radio("Modo de Análise do Gráfico Histórico:", 
+                                    ["Visão Geral (Volume de Publicações)", "Análise por Conceito (Palavras-chave)"])
             
-        btn_render_grafico = st.form_submit_button("Gerar Gráfico de Evolução", type="primary")
-
-    if btn_render_grafico:
-        if not conceitos_selecionados:
-            st.warning("Selecione pelo menos um conceito para visualizar.")
-        elif not niveis_grafico:
-            st.warning("Selecione pelo menos um nível acadêmico.")
-        else:
-            # Filtra o DataFrame usando o Pandas
-            df_filtrado_tempo = df_temporal[
-                (df_temporal['Ano'] >= anos_selecionados[0]) & 
-                (df_temporal['Ano'] <= anos_selecionados[1]) &
-                (df_temporal['Nível Acadêmico'].isin(niveis_grafico)) &
-                (df_temporal['Conceito'].isin(conceitos_selecionados))
-            ]
-            
-            if df_filtrado_tempo.empty:
-                st.info("Não houve publicações com esses conceitos nos anos e níveis selecionados.")
+            # Só mostra o multiselect se o modo for por conceito
+            if modo_grafico == "Análise por Conceito (Palavras-chave)":
+                conceitos_sel = st.multiselect("Selecione os Conceitos para comparar:", conceitos_unicos, default=top_5_conceitos)
             else:
-                # Agrupa por Ano e Conceito e conta a frequência
-                df_agrupado = df_filtrado_tempo.groupby(['Ano', 'Conceito']).size().reset_index(name='Frequência')
-                
-                # Renderiza o gráfico interativo do Plotly
-                fig = px.line(
-                    df_agrupado, 
-                    x='Ano', 
-                    y='Frequência', 
-                    color='Conceito', 
-                    markers=True,
-                    title="Trajetória de Publicações por Palavra-Chave"
-                )
-                
-                # Formatação visual para combinar com o Dark Mode
-                fig.update_layout(
-                    xaxis_title="Ano da Publicação",
-                    yaxis_title="Número de Teses/Dissertações",
-                    template="plotly_dark",
-                    hovermode="x unified", # Mostra todos os valores ao passar o rato numa linha do tempo
-                    xaxis=dict(tickmode='linear', dtick=1) # Força o eixo X a mostrar os anos inteiros
-                )
-                
+                conceitos_sel = []
+
+        st.markdown("---")
+        st.subheader("Nuvem de Palavras")
+        fonte_nuvem = st.radio("Base de texto para gerar a Nuvem de Palavras:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
+
+        btn_render_hist = st.form_submit_button("Gerar Gráficos e Nuvem", type="primary")
+
+    if btn_render_hist:
+        # Filtra o DataFrame Base pelo Ano
+        df_hist = df_geral[(df_geral['Ano'] >= anos_sel[0]) & (df_geral['Ano'] <= anos_sel[1])].copy()
+        
+        if df_hist.empty:
+            st.warning("Não há documentos no intervalo de anos selecionado.")
+        else:
+            # === RENDERIZAÇÃO DO GRÁFICO HISTÓRICO (SEÇÃO 3) ===
+            st.markdown("### Evolução Cronológica")
+            if modo_grafico == "Visão Geral (Volume de Publicações)":
+                if agrupar_niveis == "Agrupar tudo numa única linha (Total)":
+                    df_plot = df_hist.groupby('Ano').size().reset_index(name='Volume')
+                    fig = px.line(df_plot, x='Ano', y='Volume', markers=True, title="Total de Publicações por Ano")
+                else:
+                    df_plot = df_hist.groupby(['Ano', 'nivel_academico']).size().reset_index(name='Volume')
+                    fig = px.line(df_plot, x='Ano', y='Volume', color='nivel_academico', markers=True, title="Publicações por Ano (Separado por Nível)")
+            
+            else: # Análise por Conceito
+                if not conceitos_sel:
+                    st.warning("Selecione pelo menos um conceito para a análise.")
+                    fig = None
+                else:
+                    # Explode (achata) as palavras-chave para contar os anos
+                    df_exp = df_hist.explode('palavras_chave')
+                    df_exp = df_exp[df_exp['palavras_chave'].isin(conceitos_sel)]
+                    
+                    if df_exp.empty:
+                        st.info("Os conceitos selecionados não aparecem no intervalo de tempo escolhido.")
+                        fig = None
+                    else:
+                        if agrupar_niveis == "Agrupar tudo numa única linha (Total)":
+                            df_plot = df_exp.groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequência')
+                            fig = px.line(df_plot, x='Ano', y='Frequência', color='palavras_chave', markers=True, title="Evolução de Conceitos Específicos")
+                        else:
+                            # Concatena o nome do conceito com o nível para legibilidade
+                            df_exp['Linha'] = df_exp['palavras_chave'] + " (" + df_exp['nivel_academico'].str.split(' ').str[0] + ")"
+                            df_plot = df_exp.groupby(['Ano', 'Linha']).size().reset_index(name='Frequência')
+                            fig = px.line(df_plot, x='Ano', y='Frequência', color='Linha', markers=True, title="Evolução de Conceitos (Separado por Nível)")
+
+            if fig:
+                fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
                 st.plotly_chart(fig, use_container_width=True)
+
+
+            # === RENDERIZAÇÃO DA NUVEM DE PALAVRAS (SEÇÃO 4) ===
+            st.markdown("### Nuvem de Palavras (Lexicometria)")
+            
+            texto_nuvem = ""
+            if fonte_nuvem == "Títulos dos Documentos":
+                texto_nuvem = " ".join(df_hist['titulo'].dropna().astype(str).tolist())
+            else:
+                lista_c = []
+                for lst in df_hist['palavras_chave']: lista_c.extend(lst)
+                # Substitui espaços por underscores nos conceitos para a nuvem não separar "gestão" de "conhecimento"
+                texto_nuvem = " ".join([c.replace(" ", "_") for c in lista_c])
+                
+            if not texto_nuvem.strip():
+                st.info("Não há texto suficiente para gerar a nuvem de palavras neste período.")
+            else:
+                # Stopwords robustas para o contexto académico em português
+                stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'para', 'com', 'não', 'uma', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento'])
+                
+                # Gera a imagem
+                wc = WordCloud(width=800, height=400, background_color='#1E1E1E', colormap='Wistia', stopwords=stopwords_pt, max_words=100).generate(texto_nuvem)
+                
+                # Renderiza usando Matplotlib (Embutido no Streamlit)
+                fig_wc, ax = plt.subplots(figsize=(12, 6), facecolor='#1E1E1E')
+                ax.imshow(wc, interpolation='bilinear')
+                ax.axis('off')
+                fig_wc.tight_layout(pad=0)
+                
+                st.pyplot(fig_wc)
+                
+                # Dica explicativa sobre o sublinhado nos conceitos
+                if fonte_nuvem == "Conceitos (Palavras-chave)":
+                    st.caption("💡 *Nota: Os espaços entre palavras compostas (ex: 'ciência_de_redes') foram substituídos por sublinhado (_) para que a Nuvem de Palavras trate o conceito como uma unidade única e não separe as palavras.*")
 else:
-    st.info("Não há dados temporais válidos na base atual para gerar este gráfico.")
+    st.info("Não existem dados temporais válidos para exibir.")

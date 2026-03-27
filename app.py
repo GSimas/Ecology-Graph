@@ -90,7 +90,7 @@ with st.sidebar:
             "- 🔺 Triângulos: Palavras-chave")
 
 # Executa as funções (mostra um spinner carregando na tela)
-dados = extrair_dados_ufsc(limite=n_registros)
+dados = carregar_dados_locais()
 caminho_html, num_nos, num_arestas = gerar_grafo_html(dados)
 
 # Painel de Métricas Rápidas (KPIs)

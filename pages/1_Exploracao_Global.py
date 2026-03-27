@@ -9,6 +9,7 @@ import re
 from collections import Counter
 import itertools
 import streamlit.components.v1 as components
+from streamlit_agraph import agraph, Node, Edge, Config
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -95,58 +96,46 @@ def obter_dataframe_metricas(dados_recorte):
     return pd.DataFrame(lista)
 
 @st.cache_resource
-def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo (Original)"):
+def gerar_nodos_globais_agraph(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo"):
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
-        G.add_node(doc_id, tipo='Documento', ano=tese.get('ano', 'N/A'), nivel=tese.get('nivel_academico', 'N/A'))
-        if tese.get('orientador'):
-            G.add_node(tese['orientador'], tipo='Orientador')
-            G.add_edge(tese['orientador'], doc_id)
-        for pk in tese.get('palavras_chave', []):
-            G.add_node(pk, tipo='Conceito')
-            G.add_edge(doc_id, pk)
+        G.add_node(doc_id, tipo='Documento')
+        if tese.get('orientador'): G.add_node(tese['orientador'], tipo='Orientador'); G.add_edge(tese['orientador'], doc_id)
+        for pk in tese.get('palavras_chave', []): G.add_node(pk, tipo='Conceito'); G.add_edge(doc_id, pk)
 
-    degree_cent = nx.degree_centrality(G)
-    betweenness_cent = nx.betweenness_centrality(G)
-    graus_absolutos = dict(G.degree())
-
-    max_deg = max(degree_cent.values()) if degree_cent else 1
-    max_bet = max(betweenness_cent.values()) if betweenness_cent else 1
-    max_grau = max(graus_absolutos.values()) if graus_absolutos else 1
+    deg_cent, bet_cent, grau_abs = nx.degree_centrality(G), nx.betweenness_centrality(G), dict(G.degree())
+    max_deg, max_bet, max_abs = max(deg_cent.values() or [1]), max(bet_cent.values() or [1]), max(grau_abs.values() or [1])
 
     legendas_comunidades = []
     if metodo_cor != "Original (Categoria)":
-        if metodo_cor == "Comunidades (Louvain)": comunidades = nx_comm.louvain_communities(G)
-        elif metodo_cor == "Comunidades (Greedy Modularity)": comunidades = nx_comm.greedy_modularity_communities(G)
-        elif metodo_cor == "Comunidades (Girvan-Newman)":
-            try: comunidades = next(nx_comm.girvan_newman(G))
-            except: comunidades = [set(G.nodes())]
-            
+        comunidades = nx_comm.louvain_communities(G) if metodo_cor == "Comunidades (Louvain)" else nx_comm.greedy_modularity_communities(G)
         paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6']
         for i, comm in enumerate(comunidades):
             cor_com = paleta[i % len(paleta)]
             legendas_comunidades.append({"id": i+1, "cor": cor_com, "tamanho": len(comm)})
             for node in comm: G.nodes[node]['color'] = cor_com
 
+    nodes, edges = [], []
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
-        grau_atual = graus_absolutos[node]
-        if metodo_tamanho == "Grau Absoluto": tamanho = 10 + (grau_atual / max_grau) * 50
-        elif metodo_tamanho == "Degree Centrality": tamanho = 10 + (degree_cent[node] / max_deg) * 50
-        elif metodo_tamanho == "Betweenness": tamanho = 10 + (betweenness_cent[node] / max_bet) * 50
-        else: tamanho = 20
+        grau_atual = grau_abs.get(node, 0)
         
-        attrs.update({'size': tamanho, 'title': f"{node}\nTipo: {tipo}\nGrau: {grau_atual}"})
-        if metodo_cor == "Original (Categoria)":
-            attrs['color'] = '#E74C3C' if tipo == 'Documento' else '#F39C12' if tipo == 'Orientador' else '#2ECC71'
+        if metodo_tamanho == "Grau Absoluto": tam = 10 + (grau_atual / max_abs) * 40
+        elif metodo_tamanho == "Degree Centrality": tam = 10 + (deg_cent.get(node, 0) / max_deg) * 40
+        elif metodo_tamanho == "Betweenness": tam = 10 + (bet_cent.get(node, 0) / max_bet) * 40
+        else: tam = 20
+        
+        cor = attrs.get('color', ('#E74C3C' if tipo == 'Documento' else '#F39C12' if tipo == 'Orientador' else '#2ECC71'))
+        formato = 'star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'dot'
+        rotulo = node[:25] + "..." if len(node) > 25 and tipo == 'Documento' else node
+        
+        nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, shape=formato, title=f"{node}\nTipo: {tipo}\nGrau: {grau_atual}"))
 
-    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', directed=False, cdn_resources='remote')
-    net.from_nx(G)
-    net.set_options('{"interaction": {"hover": true, "selectConnectedEdges": true}}')
-    path = "grafo_temp_global.html"
-    net.save_graph(path)
-    return path, G.number_of_nodes(), G.number_of_edges(), legendas_comunidades
+    for u, v in G.edges():
+        edges.append(Edge(source=u, target=v, color="#7F8C8D", width=0.5))
+
+    return nodes, edges, legendas_comunidades
 
 def obter_frequencias_texto(df_hist, fonte_nuvem):
     if fonte_nuvem == "Conceitos (Palavras-chave)":
@@ -184,7 +173,7 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
     """
 
 @st.cache_resource
-def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
+def gerar_nodos_coocorrencia_agraph(dados_recorte, min_coocorrencia=1):
     G = nx.Graph()
     for d in dados_recorte:
         pks = d.get('palavras_chave', [])
@@ -198,14 +187,15 @@ def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
     G.remove_edges_from([(u, v) for u, v, attrs in G.edges(data=True) if attrs['weight'] < min_coocorrencia])
     G.remove_nodes_from(list(nx.isolates(G)))
 
-    for node, attrs in G.nodes(data=True): attrs.update({'shape': 'dot', 'size': min(10 + (attrs['count'] * 1.5), 60), 'color': '#2ECC71', 'title': f"{node}\nOcorrências: {attrs['count']}"})
-    for u, v, attrs in G.edges(data=True): attrs.update({'value': attrs['weight'], 'title': f"Co-ocorrências: {attrs['weight']}", 'color': 'rgba(255, 255, 255, 0.2)'})
+    nodes, edges = [], []
+    for node, attrs in G.nodes(data=True):
+        tam = min(10 + (attrs['count'] * 1.5), 50)
+        nodes.append(Node(id=node, label=node, size=tam, color='#2ECC71', shape='dot', title=f"{node}\nOcorrências: {attrs['count']}"))
 
-    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', cdn_resources='remote')
-    net.from_nx(G)
-    path = "grafo_coocorrencia_global.html"
-    net.save_graph(path)
-    return path, G.number_of_nodes(), G.number_of_edges()
+    for u, v, attrs in G.edges(data=True):
+        edges.append(Edge(source=u, target=v, width=attrs['weight']*0.5, color="rgba(200, 200, 200, 0.5)", title=f"Co-ocorrências: {attrs['weight']}"))
+
+    return nodes, edges
 
 @st.cache_data
 def preparar_csv_exportacao(dados):
@@ -242,10 +232,29 @@ if total_grafo > 0:
 
     if btn_render_grafo:
         with st.spinner("A construir a rede topológica visual..."):
-            path, nos, arestas, legendas = gerar_html_pyvis(dados_grafo[:n_registros_grafo], metodo_cor=metodo_coloracao, metodo_tamanho=metodo_tamanho)
-            st.session_state['path_grafo'] = path
-            st.session_state['kpis_grafo'] = {'nos': nos, 'arestas': arestas, 'legendas': legendas}
+            nodes, edges, legendas = gerar_nodos_globais_agraph(dados_grafo[:n_registros_grafo], metodo_cor=metodo_coloracao, metodo_tamanho=metodo_tamanho)
+            st.session_state['graf_glob_nodes'] = nodes
+            st.session_state['graf_glob_edges'] = edges
+            st.session_state['kpis_grafo'] = {'nos': len(nodes), 'arestas': len(edges), 'legendas': legendas}
             st.session_state['grafo_pronto'] = True
+
+    if st.session_state['grafo_pronto']:
+        kpis = st.session_state['kpis_grafo']
+        col_k1, col_k2, col_k3 = st.columns(3)
+        col_k1.metric("Nós no Grafo", kpis['nos'])
+        col_k2.metric("Arestas no Grafo", kpis['arestas'])
+        col_k3.info("Dica: Use a roda do rato para Zoom e clique para focar.")
+        
+        if kpis.get('legendas'):
+            st.markdown("#### 🎨 Comunidades Identificadas")
+            html_legend = "<div style='display:flex; flex-wrap:wrap; margin-bottom:15px;'>"
+            for leg in sorted(kpis['legendas'], key=lambda x: x['tamanho'], reverse=True):
+                html_legend += f"<div style='margin-right:20px;'><span style='color:{leg['cor']};'>●</span> Com. {leg['id']} ({leg['tamanho']})</div>"
+            st.markdown(html_legend + "</div>", unsafe_allow_html=True)
+
+        # Renderização Agraph Nativa
+        config = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
+        agraph(nodes=st.session_state['graf_glob_nodes'], edges=st.session_state['graf_glob_edges'], config=config)
 
     if st.session_state['grafo_pronto']:
         kpis = st.session_state['kpis_grafo']
@@ -465,10 +474,21 @@ if btn_render_coocorrencia:
         st.warning("Não há documentos nos filtros selecionados para a Co-ocorrência.")
     else:
         with st.spinner("A mapear co-ocorrências..."):
-            path_co, nos_co, arestas_co = gerar_html_coocorrencia(dados_co, min_coocorrencia=min_peso_co)
-            st.session_state['path_co'] = path_co
-            st.session_state['kpis_co'] = {'nos': nos_co, 'arestas': arestas_co}
+            nodes, edges = gerar_nodos_coocorrencia_agraph(dados_co, min_coocorrencia=min_peso_co)
+            st.session_state['co_nodes'] = nodes
+            st.session_state['co_edges'] = edges
             st.session_state['coocorrencia_pronta'] = True
+
+if st.session_state['coocorrencia_pronta']:
+    c1, c2 = st.columns(2)
+    c1.metric("Conceitos Interligados", len(st.session_state['co_nodes']))
+    c2.metric("Conexões Formadas", len(st.session_state['co_edges']))
+    
+    if len(st.session_state['co_nodes']) == 0:
+        st.info("O filtro de ruído está muito alto.")
+    else:
+        config_co = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
+        agraph(nodes=st.session_state['co_nodes'], edges=st.session_state['co_edges'], config=config_co)
 
 if st.session_state['coocorrencia_pronta']:
     kpis_co = st.session_state['kpis_co']

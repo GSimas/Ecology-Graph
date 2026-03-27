@@ -14,6 +14,25 @@ import numpy as np
 import scipy as sp
 
 
+# --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
+chaves_necessarias = {
+    'grafo_pronto': False,
+    'tabela_pronta': False,
+    'coocorrencia_pronta': False,
+    'kpis_grafo': {'nos': 0, 'arestas': 0, 'legendas': []},
+    'kpis_co': {'nos': 0, 'arestas': 0},
+    'graf_glob_nodes': [],
+    'graf_glob_edges': [],
+    'co_nodes': [],
+    'co_edges': []
+}
+
+for chave, valor_padrao in chaves_necessarias.items():
+    if chave not in st.session_state:
+        st.session_state[chave] = valor_padrao
+
+
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Exploração Global | SNA",
@@ -583,28 +602,20 @@ if btn_render_coocorrencia:
             st.session_state['co_edges'] = edges
             st.session_state['coocorrencia_pronta'] = True
 
-if st.session_state['coocorrencia_pronta']:
-    c1, c2 = st.columns(2)
-    c1.metric("Conceitos Interligados", len(st.session_state['co_nodes']))
-    c2.metric("Conexões Formadas", len(st.session_state['co_edges']))
-    
-    if len(st.session_state['co_nodes']) == 0:
-        st.info("O filtro de ruído está muito alto.")
-    else:
-        config_co = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
-        agraph(nodes=st.session_state['co_nodes'], edges=st.session_state['co_edges'], config=config_co)
+if st.session_state.get('coocorrencia_pronta'):
+    # Usamos .get() com um fallback vazio para evitar o KeyError de vez
+    kpis_co = st.session_state.get('kpis_co', {'nos': 0, 'arestas': 0})
+    nodes_co = st.session_state.get('co_nodes', [])
+    edges_co = st.session_state.get('co_edges', [])
 
-if st.session_state['coocorrencia_pronta']:
-    kpis_co = st.session_state['kpis_co']
     c1, c2, c3 = st.columns(3)
     c1.metric("Conceitos Interligados", kpis_co['nos'])
     c2.metric("Conexões Formadas", kpis_co['arestas'])
-    c3.info("Dica: Nós maiores indicam termos mais frequentes.")
+    c3.info("Dica: Use o mouse para zoom e arraste os nós para organizar a visão.")
     
-    if kpis_co['nos'] == 0:
-        st.info("O filtro de ruído está muito alto. Tente diminuir o número mínimo de co-ocorrências.")
+    if not nodes_co:
+        st.info("Gere o grafo para visualizar os dados.")
     else:
-        # --- REQUERIDO: REMOVER O 'WITH OPEN' E USAR ESTE BLOCO ---
         config_co = Config(
             width="100%", 
             height=650, 
@@ -615,11 +626,7 @@ if st.session_state['coocorrencia_pronta']:
             collapsible=False
         )
         
-        agraph(
-            nodes=st.session_state['co_nodes'], 
-            edges=st.session_state['co_edges'], 
-            config=config_co
-        )
+        agraph(nodes=nodes_co, edges=edges_co, config=config_co)
 
 st.markdown("---")
 

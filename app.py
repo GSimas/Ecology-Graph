@@ -8,20 +8,21 @@ import plotly.express as px
 import json
 import re
 from collections import Counter
+import itertools
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Ecologia do Conhecimento UFSC",
     page_icon="🌌",
     layout="wide",
-    initial_sidebar_state="collapsed" # Esconde a barra lateral, pois os filtros agora são independentes
+    initial_sidebar_state="collapsed"
 )
 
 # Estilização customizada (CSS)
 st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
-    h1, h2, h3, h4 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
+    h1, h2, h3, h4, h5 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
     .stMetric { background-color: #2C3E50; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 10px rgba(0,0,0,0.5); }
     
     button[kind="primary"] {
@@ -40,6 +41,7 @@ st.markdown("""
 # --- INICIALIZAÇÃO DE ESTADO ---
 if 'grafo_pronto' not in st.session_state: st.session_state['grafo_pronto'] = False
 if 'tabela_pronta' not in st.session_state: st.session_state['tabela_pronta'] = False
+if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia_pronta'] = False
 
 # --- FUNÇÕES DE BACK-END INDEPENDENTES ---
 @st.cache_data
@@ -89,11 +91,11 @@ def preparar_dados_base_df(dados):
     df['Ano'] = df['Ano'].astype(int)
     df['nivel_academico'] = df.get('nivel_academico', 'Outros / Não Especificado').fillna('Outros / Não Especificado')
     df['titulo'] = df.get('titulo', '').fillna('')
+    df['orientador'] = df.get('orientador', 'Não informado').fillna('Não informado')
     return df
 
 @st.cache_data
 def preparar_csv_exportacao(dados):
-    """Achata as listas do JSON para permitir a exportação em CSV puro."""
     df = pd.DataFrame(dados)
     for col in ['autores', 'co_orientadores', 'palavras_chave']:
         if col in df.columns:
@@ -120,7 +122,6 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     degree_cent = nx.degree_centrality(G)
     betweenness_cent = nx.betweenness_centrality(G)
 
-    # Dicionário e Lista para as Comunidades
     legendas_comunidades = []
     mapeamento_comunidade = {}
 
@@ -189,6 +190,58 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     with open(path, 'w', encoding='utf-8') as f: f.write(html_content.replace('return network;', script_ocultar + '\n\treturn network;'))
     return path, G.number_of_nodes(), G.number_of_edges(), legendas_comunidades
 
+@st.cache_resource
+def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
+    """Gera um grafo Pyvis exclusivo para a co-ocorrência de palavras-chave (VOSviewer style)."""
+    G = nx.Graph()
+    
+    for d in dados_recorte:
+        pks = d.get('palavras_chave', [])
+        # Adiciona nós (Contagem de ocorrências globais)
+        for pk in pks:
+            if G.has_node(pk):
+                G.nodes[pk]['count'] += 1
+            else:
+                G.add_node(pk, count=1, tipo='Conceito')
+        
+        # Cria arestas com base na combinação (co-ocorrência no mesmo documento)
+        for pk1, pk2 in itertools.combinations(pks, 2):
+            if G.has_edge(pk1, pk2):
+                G[pk1][pk2]['weight'] += 1
+            else:
+                G.add_edge(pk1, pk2, weight=1)
+
+    # Filtra arestas fracas com base no seletor do utilizador
+    arestas_remover = [(u, v) for u, v, attrs in G.edges(data=True) if attrs['weight'] < min_coocorrencia]
+    G.remove_edges_from(arestas_remover)
+    
+    # Remove nós que ficaram isolados após o filtro de arestas
+    G.remove_nodes_from(list(nx.isolates(G)))
+
+    for node, attrs in G.nodes(data=True):
+        tamanho = 10 + (attrs['count'] * 1.5) # Tamanho dinâmico
+        attrs.update({
+            'shape': 'dot', 
+            'size': min(tamanho, 60), 
+            'color': '#2ECC71', 
+            'title': f"<b>Conceito:</b> {node}\nOcorrências Totais: {attrs['count']}"
+        })
+
+    for u, v, attrs in G.edges(data=True):
+        peso = attrs['weight']
+        attrs.update({
+            'value': peso, # O Pyvis usa 'value' para a espessura da linha
+            'title': f"Co-ocorrências: {peso}",
+            'color': 'rgba(255, 255, 255, 0.2)'
+        })
+
+    net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
+    net.from_nx(G)
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}, "stabilization": {"enabled": true, "iterations": 150}}, "interaction": {"hover": true, "navigationButtons": true, "tooltipDelay": 100}}')
+    path = "grafo_coocorrencia.html"
+    net.save_graph(path)
+    return path, G.number_of_nodes(), G.number_of_edges()
+
 def obter_frequencias_texto(df_hist, fonte_nuvem):
     if fonte_nuvem == "Títulos dos Documentos":
         texto = " ".join(df_hist['titulo'].dropna().astype(str).tolist()).lower()
@@ -228,14 +281,9 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
                     textStyle: {{
                         fontFamily: 'sans-serif', fontWeight: 'bold',
                         color: function () {{
-                            return 'rgb(' + [
-                                Math.round(Math.random() * 150 + 100),
-                                Math.round(Math.random() * 150 + 100),
-                                Math.round(Math.random() * 150 + 100)
-                            ].join(',') + ')';
+                            return 'rgb(' + [Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100)].join(',') + ')';
                         }}
                     }},
-                    emphasis: {{ focus: 'self', textStyle: {{ textShadowBlur: 10, textShadowColor: '#333' }} }},
                     data: {data_js}
                 }}]
             }};
@@ -247,7 +295,7 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
     """
     return html_content
 
-# --- CONSTRUÇÃO DA INTERFACE FRONT-END ---
+# --- INÍCIO DA INTERFACE FRONT-END ---
 
 st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
 st.markdown("> Plataforma de inteligência bibliométrica para mapeamento de redes académicas, evolução histórica e análise topológica estrutural do conhecimento.")
@@ -257,19 +305,24 @@ dados_completos = carregar_dados_locais()
 if not dados_completos:
     st.stop()
 
-# Descobre os níveis disponíveis na base
-niveis_disponiveis = list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos]))
-niveis_disponiveis.sort()
+# --- PREPARAÇÃO DE LISTAS GLOBAIS PARA OS FILTROS ---
+niveis_disponiveis = sorted(list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos])))
+orientadores_disponiveis = sorted(list(set([d.get('orientador', 'Não informado') for d in dados_completos if d.get('orientador')])))
+lista_todos_conceitos = []
+for d in dados_completos: lista_todos_conceitos.extend(d.get('palavras_chave', []))
+conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
+anos_disponiveis = [int(d.get('ano')) for d in dados_completos if d.get('ano') and str(d.get('ano')).isdigit()]
+min_ano_global = min(anos_disponiveis) if anos_disponiveis else 2000
+max_ano_global = max(anos_disponiveis) if anos_disponiveis else 2025
 
-# --- SEÇÃO 1: GRAFO INTERATIVO ---
-st.header("🕸️ Topologia e Grafo Interativo")
-niveis_sel_grafo = st.multiselect("Filtrar Nível Académico (Exclusivo do Grafo):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_grafo")
+
+# === SEÇÃO 1: GRAFO INTERATIVO GERAL ===
+st.header("🕸️ 1. Topologia e Grafo Interativo")
+niveis_sel_grafo = st.multiselect("Nível Académico (Grafo):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_grafo")
 dados_grafo = [d for d in dados_completos if d.get('nivel_academico', 'Outros') in niveis_sel_grafo]
 total_grafo = len(dados_grafo)
 
-if total_grafo == 0:
-    st.warning("Nenhum documento selecionado para o Grafo.")
-else:
+if total_grafo > 0:
     with st.form("form_grafo"):
         col_g1, col_g2, col_g3 = st.columns([2, 2, 1])
         with col_g1:
@@ -290,19 +343,15 @@ else:
 
     if st.session_state['grafo_pronto']:
         kpis = st.session_state['kpis_grafo']
-        
-        # Exibe as métricas e instruções
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Nós", kpis['nos'])
         c2.metric("Arestas", kpis['arestas'])
         c3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
         c4.info("Dica: Clique num nó para isolá-lo.")
         
-     # Desenha a Lenda Dinâmica se houver Comunidades
-        if kpis.get('legendas'): # Usando .get() para evitar KeyError
+        if kpis.get('legendas'):
             st.markdown("#### 🎨 Comunidades Identificadas")
             html_legend = "<div style='background-color:#2C3E50; padding:10px; border-radius:5px; margin-bottom:15px; display:flex; flex-wrap:wrap;'>"
-            # Ordena por tamanho para mostrar as maiores comunidades primeiro
             lendas_ordenadas = sorted(kpis.get('legendas', []), key=lambda x: x['tamanho'], reverse=True)
             for leg in lendas_ordenadas:
                 html_legend += f"<div style='margin-right:20px; margin-bottom:5px; align-items:center;'><span style='display:inline-block; width:15px; height:15px; background-color:{leg['cor']}; border-radius:50%; vertical-align:middle; margin-right:5px;'></span><b>Comunidade {leg['id']}</b> ({leg['tamanho']} nós)</div>"
@@ -311,178 +360,238 @@ else:
 
         with open(st.session_state['path_grafo'], 'r', encoding='utf-8') as f:
             components.html(f.read(), height=650, scrolling=False)
+else:
+    st.warning("Nenhum documento selecionado para o Grafo.")
 
 st.markdown("---")
 
-# --- SEÇÃO 2: ANÁLISE ESTRUTURAL (RANKING) ---
-st.header("🏆 Análise Estrutural e Rankings (SNA)")
-niveis_sel_tabela = st.multiselect("Filtrar Nível Académico (Exclusivo da Tabela):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_tabela")
-dados_tabela = [d for d in dados_completos if d.get('nivel_academico', 'Outros') in niveis_sel_tabela]
-total_tabela = len(dados_tabela)
+# === SEÇÃO 2: ANÁLISE ESTRUTURAL (RANKING SNA) ===
+st.header("🏆 2. Análise Estrutural e Rankings (SNA)")
+with st.form("form_tabela"):
+    col_t_filt1, col_t_filt2, col_t_filt3 = st.columns(3)
+    with col_t_filt1:
+        niveis_sel_tabela = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_tabela")
+    with col_t_filt2:
+        anos_sel_tabela = st.slider("Filtrar por Período (Ano):", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_tab")
+    with col_t_filt3:
+        conceitos_contexto = st.multiselect("Filtrar Rede por Documentos que contenham os Conceitos:", options=conceitos_unicos, default=[], help="Se vazio, analisa a rede inteira. Se selecionado, calcula as métricas apenas nos documentos que possuem estas palavras-chave.")
 
-if total_tabela == 0:
-    st.warning("Nenhum documento selecionado para a Tabela.")
-else:
-    with st.form("form_tabela"):
-        col_t1, col_t2 = st.columns([3, 1])
-        with col_t1:
-            max_docs_t = total_tabela if total_tabela > 1 else 2
-            n_registros_tabela = st.slider("Documentos analisados matematicamente:", 1, max_docs_t, total_tabela, 1)
-        with col_t2:
-            top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
+    st.markdown("##### Configurações do Ranking")
+    col_t1, col_t2 = st.columns([3, 1])
+    with col_t1:
+        n_registros_tabela = st.slider("Volume de documentos base para o cálculo:", 1, len(dados_completos), len(dados_completos), 1)
+    with col_t2:
+        top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
 
-        col_t3, col_t4, col_t5 = st.columns(3)
-        categorias_disp = ["Documento", "Autor", "Orientador", "Conceito"]
-        todas_metricas = ["Grau Absoluto", "Degree Centrality", "Betweenness"]
+    col_t3, col_t4, col_t5 = st.columns(3)
+    categorias_disp = ["Documento", "Autor", "Orientador", "Conceito"]
+    todas_metricas = ["Grau Absoluto", "Degree Centrality", "Betweenness"]
+    
+    with col_t3: cat_sel = st.multiselect("Categorias a exibir na tabela:", categorias_disp, default=["Orientador", "Conceito"])
+    with col_t4: met_sel = st.multiselect("Métricas a exibir:", todas_metricas, default=["Grau Absoluto", "Betweenness"])
+    with col_t5: met_ord = st.selectbox("Ordenar Ranking primariamente por:", met_sel if met_sel else todas_metricas)
         
-        with col_t3: cat_sel = st.multiselect("Categorias a incluir:", categorias_disp, default=["Orientador", "Conceito"])
-        with col_t4: met_sel = st.multiselect("Métricas a exibir:", todas_metricas, default=["Grau Absoluto", "Betweenness"])
-        with col_t5: met_ord = st.selectbox("Ordenar o Ranking por:", met_sel if met_sel else todas_metricas)
-            
-        btn_render_tabela = st.form_submit_button("Processar e Atualizar Tabela", type="primary")
+    btn_render_tabela = st.form_submit_button("Processar e Atualizar Tabela", type="primary")
 
-    if btn_render_tabela:
-        if met_sel and cat_sel:
-            df_completo = obter_dataframe_metricas(dados_tabela[:n_registros_tabela])
+if btn_render_tabela:
+    if met_sel and cat_sel:
+        # Filtra os dados de entrada com base nas escolhas
+        dados_tab_filtrados = []
+        for d in dados_completos[:n_registros_tabela]:
+            if d.get('nivel_academico', 'Outros') not in niveis_sel_tabela: continue
+            
+            ano_d = int(d.get('ano')) if d.get('ano') and str(d.get('ano')).isdigit() else None
+            if not ano_d or ano_d < anos_sel_tabela[0] or ano_d > anos_sel_tabela[1]: continue
+            
+            if conceitos_contexto:
+                pks_doc = set(d.get('palavras_chave', []))
+                if not any(c in pks_doc for c in conceitos_contexto): continue
+                
+            dados_tab_filtrados.append(d)
+
+        if not dados_tab_filtrados:
+            st.warning("Nenhum documento atende aos filtros de Ano/Nível/Conceito definidos.")
+        else:
+            df_completo = obter_dataframe_metricas(dados_tab_filtrados)
             df_top_x = df_completo[df_completo['Categoria'].isin(cat_sel)].sort_values(by=met_ord, ascending=False).head(top_x)
+            
+            # Adiciona a coluna Posição (Ranking Index) no início
+            df_top_x.insert(0, 'Posição', range(1, len(df_top_x) + 1))
+            
             st.session_state['df_top_x'] = df_top_x
-            st.session_state['colunas_finais'] = ['Entidade (Nó)', 'Categoria'] + met_sel
+            st.session_state['colunas_finais'] = ['Posição', 'Entidade (Nó)', 'Categoria'] + met_sel
             st.session_state['tabela_pronta'] = True
 
-    if st.session_state['tabela_pronta']:
-        df_exibicao = st.session_state['df_top_x'].copy()
-        colunas = st.session_state['colunas_finais']
-        if 'Degree Centrality' in df_exibicao.columns: df_exibicao['Degree Centrality'] = df_exibicao['Degree Centrality'].apply(lambda x: f"{x:.4f}")
-        if 'Betweenness' in df_exibicao.columns: df_exibicao['Betweenness'] = df_exibicao['Betweenness'].apply(lambda x: f"{x:.4f}")
-        st.dataframe(df_exibicao[colunas], use_container_width=True, hide_index=True)
+if st.session_state['tabela_pronta']:
+    df_exibicao = st.session_state['df_top_x'].copy()
+    colunas = st.session_state['colunas_finais']
+    if 'Degree Centrality' in df_exibicao.columns: df_exibicao['Degree Centrality'] = df_exibicao['Degree Centrality'].apply(lambda x: f"{x:.4f}")
+    if 'Betweenness' in df_exibicao.columns: df_exibicao['Betweenness'] = df_exibicao['Betweenness'].apply(lambda x: f"{x:.4f}")
+    st.dataframe(df_exibicao[colunas], use_container_width=True, hide_index=True)
 
 st.markdown("---")
 
-# --- SEÇÃO 3: EVOLUÇÃO CRONOLÓGICA ---
-st.header("📈 Evolução Histórica (Temporal)")
-niveis_sel_hist = st.multiselect("Filtrar Nível Académico (Exclusivo do Gráfico Temporal):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_hist")
-dados_hist_raw = [d for d in dados_completos if d.get('nivel_academico', 'Outros') in niveis_sel_hist]
+# === SEÇÃO 3: EVOLUÇÃO CRONOLÓGICA ===
+st.header("📈 3. Evolução Histórica (Temporal)")
+df_geral_base = preparar_dados_base_df(dados_completos)
 
-df_hist_geral = preparar_dados_base_df(dados_hist_raw)
+with st.form("form_historico"):
+    col_h_filt1, col_h_filt2, col_h_filt3 = st.columns(3)
+    with col_h_filt1:
+        niveis_sel_hist = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_hist")
+    with col_h_filt2:
+        orientador_sel_hist = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para considerar todos os orientadores.")
+    with col_h_filt3:
+        anos_sel_hist = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_hist")
 
-if df_hist_geral.empty:
-    st.warning("Não há dados válidos para gerar gráficos temporais.")
-else:
-    min_ano = int(df_hist_geral['Ano'].min())
-    max_ano = int(df_hist_geral['Ano'].max())
-    lista_todos_conceitos = []
-    for c_list in df_hist_geral['palavras_chave']: lista_todos_conceitos.extend(c_list)
-    conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
-    top_5_conceitos = pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist()
-
-    with st.form("form_historico"):
-        col_h1, col_h2 = st.columns(2)
-        with col_h1:
-            anos_sel_hist = st.slider("Intervalo de Anos:", min_ano, max_ano, (min_ano, max_ano), 1)
-            agrupar_niveis_hist = st.radio("Visão dos Níveis:", ["Agrupar tudo (Total)", "Separar Teses e Dissertações"], horizontal=True)
-        with col_h2:
-            modo_grafico = st.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Conceito (Palavras-chave)"], horizontal=True)
-            if modo_grafico == "Análise por Conceito (Palavras-chave)":
-                conceitos_sel = st.multiselect("Conceitos:", conceitos_unicos, default=top_5_conceitos)
-            else:
-                conceitos_sel = []
-
-        btn_render_hist = st.form_submit_button("Atualizar Gráfico Histórico", type="primary")
-
-    if btn_render_hist:
-        df_hist = df_hist_geral[(df_hist_geral['Ano'] >= anos_sel_hist[0]) & (df_hist_geral['Ano'] <= anos_sel_hist[1])].copy()
-        if df_hist.empty:
-            st.warning("Não há documentos no intervalo selecionado.")
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        agrupar_niveis_hist = st.radio("Visão dos Níveis:", ["Agrupar tudo (Total)", "Separar Teses e Dissertações"], horizontal=True)
+    with col_h2:
+        modo_grafico = st.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Conceito (Palavras-chave)"], horizontal=True)
+        if modo_grafico == "Análise por Conceito (Palavras-chave)":
+            conceitos_sel_hist = st.multiselect("Conceitos a comparar:", conceitos_unicos, default=pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist())
         else:
-            if modo_grafico == "Visão Geral (Volume)":
-                if agrupar_niveis_hist == "Agrupar tudo (Total)":
-                    df_plot = df_hist.groupby('Ano').size().reset_index(name='Volume')
-                    fig = px.line(df_plot, x='Ano', y='Volume', markers=True, title="Total de Publicações por Ano")
-                else:
-                    df_plot = df_hist.groupby(['Ano', 'nivel_academico']).size().reset_index(name='Volume')
-                    fig = px.line(df_plot, x='Ano', y='Volume', color='nivel_academico', markers=True, title="Publicações por Ano (Separado por Nível)")
+            conceitos_sel_hist = []
+
+    btn_render_hist = st.form_submit_button("Atualizar Gráfico Histórico", type="primary")
+
+if btn_render_hist and not df_geral_base.empty:
+    df_hist = df_geral_base[
+        (df_geral_base['Ano'] >= anos_sel_hist[0]) & 
+        (df_geral_base['Ano'] <= anos_sel_hist[1]) &
+        (df_geral_base['nivel_academico'].isin(niveis_sel_hist))
+    ].copy()
+    
+    if orientador_sel_hist:
+        df_hist = df_hist[df_hist['orientador'].isin(orientador_sel_hist)]
+
+    if df_hist.empty:
+        st.warning("Não há documentos no intervalo e filtros selecionados.")
+    else:
+        fig = None
+        if modo_grafico == "Visão Geral (Volume)":
+            if agrupar_niveis_hist == "Agrupar tudo (Total)":
+                df_plot = df_hist.groupby('Ano').size().reset_index(name='Volume')
+                fig = px.line(df_plot, x='Ano', y='Volume', markers=True, title="Total de Publicações por Ano")
             else:
-                if not conceitos_sel:
-                    st.warning("Selecione pelo menos um conceito.")
-                    fig = None
+                df_plot = df_hist.groupby(['Ano', 'nivel_academico']).size().reset_index(name='Volume')
+                fig = px.line(df_plot, x='Ano', y='Volume', color='nivel_academico', markers=True, title="Publicações por Ano (Separado por Nível)")
+        else:
+            if not conceitos_sel_hist:
+                st.warning("Selecione pelo menos um conceito.")
+            else:
+                df_exp = df_hist.explode('palavras_chave')
+                df_exp = df_exp[df_exp['palavras_chave'].isin(conceitos_sel_hist)]
+                if df_exp.empty:
+                    st.info("Os conceitos não aparecem nos filtros selecionados.")
                 else:
-                    df_exp = df_hist.explode('palavras_chave')
-                    df_exp = df_exp[df_exp['palavras_chave'].isin(conceitos_sel)]
-                    if df_exp.empty:
-                        st.info("Os conceitos não aparecem no intervalo selecionado.")
-                        fig = None
+                    if agrupar_niveis_hist == "Agrupar tudo (Total)":
+                        df_plot = df_exp.groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequência')
+                        fig = px.line(df_plot, x='Ano', y='Frequência', color='palavras_chave', markers=True, title="Evolução de Conceitos Específicos")
                     else:
-                        if agrupar_niveis_hist == "Agrupar tudo (Total)":
-                            df_plot = df_exp.groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequência')
-                            fig = px.line(df_plot, x='Ano', y='Frequência', color='palavras_chave', markers=True, title="Evolução de Conceitos Específicos")
-                        else:
-                            df_exp['Linha'] = df_exp['palavras_chave'] + " (" + df_exp['nivel_academico'].str.split(' ').str[0] + ")"
-                            df_plot = df_exp.groupby(['Ano', 'Linha']).size().reset_index(name='Frequência')
-                            fig = px.line(df_plot, x='Ano', y='Frequência', color='Linha', markers=True, title="Evolução de Conceitos (Separado por Nível)")
+                        df_exp['Linha'] = df_exp['palavras_chave'] + " (" + df_exp['nivel_academico'].str.split(' ').str[0] + ")"
+                        df_plot = df_exp.groupby(['Ano', 'Linha']).size().reset_index(name='Frequência')
+                        fig = px.line(df_plot, x='Ano', y='Frequência', color='Linha', markers=True, title="Evolução de Conceitos (Separado por Nível)")
 
-            if fig:
-                fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
-                st.plotly_chart(fig, use_container_width=True)
+        if fig:
+            fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
+            st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
-# --- SEÇÃO 4: NUVEM DE PALAVRAS (INTERATIVA) ---
-st.header("☁️ Lexicometria e Nuvem de Palavras")
-niveis_sel_nuvem = st.multiselect("Filtrar Nível Académico (Exclusivo da Nuvem):", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_nuvem")
-dados_nuvem_raw = [d for d in dados_completos if d.get('nivel_academico', 'Outros') in niveis_sel_nuvem]
-df_nuvem_geral = preparar_dados_base_df(dados_nuvem_raw)
+# === SEÇÃO 4: NUVEM DE PALAVRAS ===
+st.header("☁️ 4. Lexicometria e Nuvem de Palavras")
+with st.form("form_nuvem"):
+    col_n_filt1, col_n_filt2, col_n_filt3 = st.columns(3)
+    with col_n_filt1:
+        niveis_sel_nuvem = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_nuvem")
+    with col_n_filt2:
+        orientador_sel_nuvem = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para considerar todos.")
+    with col_n_filt3:
+        anos_sel_nuvem = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_nuvem")
 
-if df_nuvem_geral.empty:
-    st.warning("Não há dados válidos para gerar a nuvem.")
-else:
-    min_ano_n = int(df_nuvem_geral['Ano'].min())
-    max_ano_n = int(df_nuvem_geral['Ano'].max())
+    fonte_nuvem = st.radio("Base de texto:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
+    btn_render_nuvem = st.form_submit_button("Gerar Nuvem de Palavras", type="primary")
 
-    with st.form("form_nuvem"):
-        col_n1, col_n2 = st.columns(2)
-        with col_n1:
-            anos_sel_nuvem = st.slider("Intervalo de Anos (Nuvem):", min_ano_n, max_ano_n, (min_ano_n, max_ano_n), 1)
-        with col_n2:
-            fonte_nuvem = st.radio("Base de texto:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
+if btn_render_nuvem and not df_geral_base.empty:
+    df_nuvem = df_geral_base[
+        (df_geral_base['Ano'] >= anos_sel_nuvem[0]) & 
+        (df_geral_base['Ano'] <= anos_sel_nuvem[1]) &
+        (df_geral_base['nivel_academico'].isin(niveis_sel_nuvem))
+    ].copy()
+    
+    if orientador_sel_nuvem:
+        df_nuvem = df_nuvem[df_nuvem['orientador'].isin(orientador_sel_nuvem)]
 
-        btn_render_nuvem = st.form_submit_button("Gerar Nuvem de Palavras", type="primary")
-
-    if btn_render_nuvem:
-        df_nuvem = df_nuvem_geral[(df_nuvem_geral['Ano'] >= anos_sel_nuvem[0]) & (df_nuvem_geral['Ano'] <= anos_sel_nuvem[1])].copy()
-        if df_nuvem.empty:
-            st.warning("Não há documentos no intervalo selecionado.")
+    if df_nuvem.empty:
+        st.warning("Não há documentos nos filtros selecionados.")
+    else:
+        freq_dict = obter_frequencias_texto(df_nuvem, fonte_nuvem)
+        if not freq_dict:
+            st.info("Não foi possível extrair palavras suficientes.")
         else:
-            freq_dict = obter_frequencias_texto(df_nuvem, fonte_nuvem)
-            if not freq_dict:
-                st.info("Não foi possível extrair palavras suficientes para a nuvem.")
-            else:
-                html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
-                components.html(html_nuvem, height=480, scrolling=False)
+            html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
+            components.html(html_nuvem, height=480, scrolling=False)
 
 st.markdown("---")
 
-# --- SEÇÃO 5: ACESSO À BASE DE DADOS BRUTA ---
-st.header("📥 Exportação da Base de Dados Bruta")
-st.write("Transfira os metadados integrais do PPGEGC para análises externas ou importação noutros softwares.")
+# === SEÇÃO 5: GRAFO DE CO-OCORRÊNCIA (VOSVIEWER STYLE) ===
+st.header("🔗 5. Grafo de Co-ocorrência de Palavras")
+st.write("Analise como os conceitos e palavras-chave se relacionam dentro das teses e dissertações (clusters temáticos).")
 
+with st.form("form_coocorrencia"):
+    col_c_filt1, col_c_filt2, col_c_filt3 = st.columns(3)
+    with col_c_filt1:
+        niveis_sel_co = st.multiselect("Nível Académico:", options=niveis_disponiveis, default=niveis_disponiveis, key="niv_co")
+    with col_c_filt2:
+        orientador_sel_co = st.multiselect("Orientador(es):", options=orientadores_disponiveis, default=[], help="Deixe em branco para todos.")
+    with col_c_filt3:
+        anos_sel_co = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_co")
+        
+    min_peso_co = st.slider("Filtro de Ruído: Mostrar apenas conexões que ocorrem juntas pelo menos X vezes:", min_value=1, max_value=20, value=2)
+    
+    btn_render_coocorrencia = st.form_submit_button("Gerar Grafo de Co-ocorrência", type="primary")
+
+if btn_render_coocorrencia:
+    # Filtra os dados de entrada
+    dados_co = []
+    for d in dados_completos:
+        if d.get('nivel_academico', 'Outros') not in niveis_sel_co: continue
+        ano_d = int(d.get('ano')) if d.get('ano') and str(d.get('ano')).isdigit() else None
+        if not ano_d or ano_d < anos_sel_co[0] or ano_d > anos_sel_co[1]: continue
+        if orientador_sel_co and d.get('orientador', 'Não informado') not in orientador_sel_co: continue
+        dados_co.append(d)
+
+    if not dados_co:
+        st.warning("Não há documentos nos filtros selecionados para a Co-ocorrência.")
+    else:
+        with st.spinner("A mapear co-ocorrências (Isto pode demorar se a base for muito grande)..."):
+            path_co, nos_co, arestas_co = gerar_html_coocorrencia(dados_co, min_coocorrencia=min_peso_co)
+            st.session_state['path_co'] = path_co
+            st.session_state['kpis_co'] = {'nos': nos_co, 'arestas': arestas_co}
+            st.session_state['coocorrencia_pronta'] = True
+
+if st.session_state['coocorrencia_pronta']:
+    kpis_co = st.session_state['kpis_co']
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Conceitos Interligados", kpis_co['nos'])
+    c2.metric("Conexões Formadas", kpis_co['arestas'])
+    
+    if kpis_co['nos'] == 0:
+        st.info("O filtro de ruído está muito alto. Tente diminuir o número mínimo de co-ocorrências.")
+    else:
+        with open(st.session_state['path_co'], 'r', encoding='utf-8') as f:
+            components.html(f.read(), height=650, scrolling=False)
+
+st.markdown("---")
+
+# === SEÇÃO 6: EXPORTAÇÃO DA BASE ===
+st.header("📥 6. Exportação da Base de Dados Bruta")
 col_b1, col_b2 = st.columns(2)
-
 with col_b1:
-    # Descarregar JSON puro
     json_string = json.dumps(dados_completos, ensure_ascii=False, indent=4)
-    st.download_button(
-        label="📄 Baixar Base Completa (JSON Original)",
-        file_name="base_ppgegc.json",
-        mime="application/json",
-        data=json_string,
-    )
-
+    st.download_button("📄 Baixar Base Completa (JSON Original)", file_name="base_ppgegc.json", mime="application/json", data=json_string)
 with col_b2:
-    # Descarregar CSV limpo
     csv_bytes = preparar_csv_exportacao(dados_completos)
-    st.download_button(
-        label="📊 Baixar Base Completa (Formato CSV)",
-        file_name="base_ppgegc.csv",
-        mime="text/csv",
-        data=csv_bytes,
-    )
+    st.download_button("📊 Baixar Base Completa (Formato CSV)", file_name="base_ppgegc.csv", mime="text/csv", data=csv_bytes)

@@ -2,3 +2,4 @@ streamlit
 networkx
 pyvis
 sickle
+pandas

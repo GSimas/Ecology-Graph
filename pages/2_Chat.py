@@ -6,7 +6,7 @@ from groq import Groq
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Chatbot",
+    page_title="Analista IA de Redes | Universal",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -17,9 +17,18 @@ st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
     .stChatMessage { background-color: #2C3E50; border-radius: 10px; margin-bottom: 10px; }
-    h1, h2, h3 { color: #F39C12; }
+    h1, h2, h3 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
     </style>
 """, unsafe_allow_html=True)
+
+# --- PROTEÇÃO E LEITURA DA MEMÓRIA VIVA (SESSION STATE) ---
+if 'dados_completos' not in st.session_state or not st.session_state['dados_completos']:
+    st.warning("⚠️ Nenhuma base de dados carregada na memória.")
+    st.info("Por favor, vá à página inicial e inicie a extração de um Programa de Pós-Graduação antes de iniciar o chat.")
+    st.stop()
+
+base_dados = st.session_state['dados_completos']
+nome_programa = st.session_state.get('nome_programa', 'Programa Desconhecido')
 
 # --- CONFIGURAÇÃO AUTOMÁTICA DA API KEY ---
 try:
@@ -33,15 +42,17 @@ except Exception:
 def processar_inteligencia_rede(dados):
     G = nx.Graph()
     for d in dados:
-        titulo = d['titulo']
+        titulo = d.get('titulo')
+        if not titulo: continue
         G.add_node(titulo, tipo='Documento')
         ori = d.get('orientador')
         if ori:
             G.add_node(ori, tipo='Orientador')
             G.add_edge(titulo, ori)
         for pk in d.get('palavras_chave', []):
-            G.add_node(pk, tipo='Conceito')
-            G.add_edge(titulo, pk)
+            if pk:
+                G.add_node(pk, tipo='Conceito')
+                G.add_edge(titulo, pk)
 
     degree_dict = dict(G.degree())
     deg_cent = nx.degree_centrality(G)
@@ -54,29 +65,24 @@ def processar_inteligencia_rede(dados):
         return "\n".join([f"- {nome}: {valor:.4f}" for nome, valor in top])
 
     return f"""
-    1. ORIENTADORES (Volume/Degree):
-    {extrair_vips('Orientador', degree_dict)}
-    2. ORIENTADORES (Pontes/Betweenness):
+    1. ORIENTADORES (Volume/Degree Centrality):
+    {extrair_vips('Orientador', deg_cent)}
+    
+    2. ORIENTADORES (Pontes e Conexões Diversas/Betweenness):
     {extrair_vips('Orientador', bet_cent)}
-    3. TEMAS (Centralidade):
+    
+    3. TEMAS/CONCEITOS MAIS CENTRAIS:
     {extrair_vips('Conceito', deg_cent)}
     """
 
-# --- INICIALIZAÇÃO ---
+# --- INICIALIZAÇÃO DO CHAT E DA IA ---
 client = Groq(api_key=api_key)
 
-try:
-    with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
-        base_dados = json.load(f)
-except Exception as e:
-    st.error(f"Erro ao ler base_ppgegc.json: {e}")
-    st.stop()
-
-with st.spinner("Sincronizando inteligência da rede..."):
+with st.spinner(f"A treinar a IA com a matemática da rede do {nome_programa}..."):
     contexto_sna = processar_inteligencia_rede(base_dados)
 
-st.title("🤖 Chatbot Ecológico Estratégico")
-st.caption("Acesso via Llama 3.3 70B & Groq Cloud")
+st.title("🤖 Chatbot Estratégico (SNA)")
+st.caption(f"Acesso via Llama 3.3 70B | Especializado em: {nome_programa}")
 
 # Histórico de mensagens
 if "messages" not in st.session_state:
@@ -87,25 +93,25 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Entrada do Chat
-if prompt := st.chat_input("Pergunte algo sobre a ecologia do PPGEGC..."):
-    # Adiciona a mensagem do usuário ao estado
+if prompt := st.chat_input("Ex: Quem domina as orientações e quem faz a ponte entre áreas?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Preparação do Prompt de Sistema
     system_prompt = f"""
-    Você é o Analista Sénior de Ecologia do Conhecimento do PPGEGC/UFSC.
-    DADOS MATEMÁTICOS DA REDE:
+    Você é o Analista Sénior de Ecologia do Conhecimento responsável por analisar o programa: {nome_programa} da UFSC.
+    Você possui acesso em tempo real aos cálculos topológicos da rede académica deste programa.
+
+    DADOS MATEMÁTICOS DA REDE ATUAL:
     {contexto_sna}
     
-    INSTRUÇÕES:
-    - Responda em Português do Brasil.
-    - Use os dados SNA acima para justificar quem é mais influente (Betweenness) ou tem mais volume (Degree).
-    - Seja acadêmico, mas direto.
+    INSTRUÇÕES CRÍTICAS:
+    - Responda em Português do Brasil de forma assertiva e especializada.
+    - Quando o usuário perguntar quem é o "líder" em volume, baseie-se na lista de Degree Centrality.
+    - Quando o usuário perguntar quem é o "broker", o "influenciador" ou quem "conecta saberes", use rigorosamente a lista de Betweenness Centrality.
+    - Se perguntarem sobre assuntos ou tendências, cite os Temas Centrais.
     """
 
-    # Construção Segura da Lista de Mensagens (Garante que só enviamos role e content)
     mensagens_limpas = [{"role": "system", "content": system_prompt}]
     for m in st.session_state.messages:
         mensagens_limpas.append({"role": m["role"], "content": m["content"]})
@@ -115,7 +121,6 @@ if prompt := st.chat_input("Pergunte algo sobre a ecologia do PPGEGC..."):
         full_res = ""
         
         try:
-            # USANDO O MODELO LLAMA-3.3-70B-VERSATILE (Mais estável na Groq atualmente)
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=mensagens_limpas,
@@ -132,5 +137,4 @@ if prompt := st.chat_input("Pergunte algo sobre a ecologia do PPGEGC..."):
             st.session_state.messages.append({"role": "assistant", "content": full_res})
             
         except Exception as e:
-            st.error(f"Erro na API da Groq: {e}")
-            st.info("Dica: Verifique se o modelo 'llama-3.3-70b-versatile' está disponível ou tente 'llama-3.1-8b-instant'.")
+            st.error(f"Erro na comunicação com a IA: {e}")

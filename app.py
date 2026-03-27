@@ -47,18 +47,7 @@ if 'tabela_pronta' not in st.session_state:
 def carregar_dados_locais():
     try:
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
-            dados = json.load(f)
-            
-            # Rotina para classificar automaticamente o nível acadêmico pelo título
-            for t in dados:
-                titulo_lower = t.get('titulo', '').lower()
-                if 'tese' in titulo_lower:
-                    t['nivel_academico'] = 'Tese (Doutorado)'
-                elif 'disserta' in titulo_lower:
-                    t['nivel_academico'] = 'Dissertação (Mestrado)'
-                else:
-                    t['nivel_academico'] = 'Outros / Não Especificado'
-            return dados
+            return json.load(f)
     except FileNotFoundError:
         st.error("Arquivo base_ppgegc.json não encontrado no repositório.")
         return []

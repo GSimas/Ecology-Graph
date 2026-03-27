@@ -190,15 +190,20 @@ total_documentos = len(dados_completos) if len(dados_completos) > 0 else 100
 
 # Filtro Global de Nível Acadêmico (Afeta o Grafo e a Tabela)
 st.sidebar.header("🎯 Filtro Global de Dados")
-niveis_disponiveis = ["Tese (Doutorado)", "Dissertação (Mestrado)", "Outros / Não Especificado"]
+
+# 1. Mapeia dinamicamente os níveis que REALMENTE existem no arquivo JSON
+# O 'Não Classificado' atua como salva-vidas caso o JSON antigo ainda esteja em cache
+niveis_disponiveis = list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos]))
+niveis_disponiveis.sort()
+
 niveis_selecionados = st.sidebar.multiselect(
     "Filtrar Base de Dados por Nível:",
     options=niveis_disponiveis,
-    default=["Tese (Doutorado)", "Dissertação (Mestrado)"]
+    default=niveis_disponiveis # Já inicia com todos selecionados para não dar tela vazia
 )
 
 # Aplica o filtro global na base antes de distribuir para as ferramentas
-dados_filtrados_globalmente = [d for d in dados_completos if d.get('nivel_academico') in niveis_selecionados]
+dados_filtrados_globalmente = [d for d in dados_completos if d.get('nivel_academico', 'Não Classificado') in niveis_selecionados]
 total_filtrado = len(dados_filtrados_globalmente)
 
 if total_filtrado == 0:

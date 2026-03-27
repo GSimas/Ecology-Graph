@@ -4,3 +4,5 @@ pyvis
 sickle
 pandas
 plotly
+wordcloud
+matplotlib

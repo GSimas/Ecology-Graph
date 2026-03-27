@@ -73,31 +73,49 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 @st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
 def obter_programas_ufsc():
-    """Conecta ao repositório da UFSC e lista apenas os Programas de Pós-Graduação, evitando colisões de nomes iguais."""
+    """Conecta ao repositório da UFSC e filtra as Comunidades Fantasmas, mantendo apenas as Coleções Ativas."""
     try:
         sickle = Sickle('https://repositorio.ufsc.br/oai/request')
         sets = sickle.ListSets()
-        colecoes = {}
+        colecoes_temporarias = {}
         
         for s in sets:
             if s.setSpec.startswith('col_'):
-                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', s.setName.lower()) if unicodedata.category(c) != 'Mn')
+                nome_original = s.setName
+                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', nome_original.lower()) if unicodedata.category(c) != 'Mn')
                 
-                # Filtro Lexical
-                if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm or "teses e dissertacoes" in nome_norm:
-                    # Limpa o prefixo padrão
-                    nome_exibicao = s.setName.replace("Teses e Dissertações - ", "").strip()
+                # Filtro Lexical: Pega tudo de Pós-Graduação
+                if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm:
                     
-                    # --- A MÁGICA ACONTECE AQUI ---
-                    # Extraímos o número final do Handle (ex: 75141)
-                    id_handle = s.setSpec.split('_')[-1]
+                    # O "Pulo do Gato": Pastas com PDFs reais geralmente têm "Tese" ou "Dissertação" no nome original.
+                    # As pastas "Fantasma" (Comunidades) têm apenas o nome do curso.
+                    is_colecao_ativa = "tese" in nome_norm or "disserta" in nome_norm
                     
-                    # Anexamos o ID ao nome. Isto torna a chave única e impede a sobreposição!
-                    nome_completo = f"{nome_exibicao} (ID: {id_handle})"
+                    # Limpa os prefixos para conseguirmos agrupar a pasta fantasma com a pasta real do mesmo curso
+                    nome_limpo = re.sub(r'^(Teses e Dissertações|Teses de Doutorado|Dissertações de Mestrado)\s*-\s*', '', nome_original, flags=re.IGNORECASE).strip()
                     
-                    colecoes[nome_completo] = s.setSpec
+                    if nome_limpo not in colecoes_temporarias:
+                        colecoes_temporarias[nome_limpo] = []
+                        
+                    colecoes_temporarias[nome_limpo].append({
+                        'id': s.setSpec,
+                        'is_ativa': is_colecao_ativa,
+                        'id_num': s.setSpec.split('_')[-1]
+                    })
                     
-        return dict(sorted(colecoes.items()))
+        # Constrói a lista final eliminando os fantasmas
+        colecoes_finais = {}
+        for nome_limpo, lista_sets in colecoes_temporarias.items():
+            # Se houver uma pasta ativa (com teses), descartamos a pasta fantasma
+            ativas = [x for x in lista_sets if x['is_ativa']]
+            selecionados = ativas if ativas else lista_sets
+            
+            for item in selecionados:
+                # O nome fica limpo, mas mantemos o ID para segurança contra colisões
+                nome_exibicao = f"{nome_limpo} (ID: {item['id_num']})"
+                colecoes_finais[nome_exibicao] = item['id']
+                
+        return dict(sorted(colecoes_finais.items()))
     except Exception as e:
         st.error(f"Erro ao conectar com a UFSC: {e}")
         return {}

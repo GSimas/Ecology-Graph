@@ -36,7 +36,6 @@ def carregar_dados_locais():
 def gerar_grafo_e_metricas(dados):
     G = nx.Graph()
     
-    # 1. Montar a topologia do Grafo
     for tese in dados:
         doc_id = tese['titulo']
         G.add_node(doc_id, tipo='Documento', ano=tese['ano'])
@@ -53,14 +52,11 @@ def gerar_grafo_e_metricas(dados):
             G.add_node(pk, tipo='Conceito')
             G.add_edge(doc_id, pk)
 
-    # 2. Calcular Métricas SNA
     degree_cent = nx.degree_centrality(G)
     betweenness_cent = nx.betweenness_centrality(G)
     
-    # Lista para alimentar o DataFrame do Pandas
     lista_metricas = []
 
-    # 3. Adicionar Atributos Visuais e Popular a Lista de Métricas
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
         
@@ -68,7 +64,6 @@ def gerar_grafo_e_metricas(dados):
         deg_c = degree_cent[node]
         bet_c = betweenness_cent[node]
         
-        # Guarda os dados para a tabela
         lista_metricas.append({
             'Entidade (Nó)': node,
             'Categoria': tipo,
@@ -80,12 +75,11 @@ def gerar_grafo_e_metricas(dados):
         janela_sna = f"""
         <hr>
         <b>📊 Métricas SNA:</b><br>
-        Grau Absoluto (Conexões): {conexoes}<br>
+        Grau Absoluto: {conexoes}<br>
         Degree Centrality: {deg_c:.4f}<br>
         Betweenness: {bet_c:.4f}
         """
         
-        # Configuração visual consoante o tipo
         if tipo == 'Documento':
             attrs['color'] = '#E74C3C'
             attrs['shape'] = 'square'
@@ -107,10 +101,8 @@ def gerar_grafo_e_metricas(dados):
             attrs['size'] = 15
             attrs['title'] = f"<b>Conceito:</b><br>{node}" + janela_sna
 
-    # 4. Criar o DataFrame
     df_metricas = pd.DataFrame(lista_metricas)
 
-    # 5. Configuração do Pyvis
     net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
     net.from_nx(G)
     
@@ -131,7 +123,6 @@ def gerar_grafo_e_metricas(dados):
     path = "grafo_temp.html"
     net.save_graph(path)
     
-    # 6. Injeção de JavaScript para ocultar nós ao clicar
     script_ocultar_nos = """
     network.on("selectNode", function (params) {
         if (params.nodes.length === 1) {
@@ -182,28 +173,28 @@ total_documentos = len(dados_completos) if len(dados_completos) > 0 else 100
 
 with st.sidebar:
     st.header("Análise Estrutural")
-    n_registros = st.slider("Documentos para analisar:", min_value=5, max_value=total_documentos, value=40, step=5)
+    n_registros = st.slider("Documentos para desenhar na rede:", min_value=5, max_value=total_documentos, value=40, step=5)
     st.markdown("---")
     st.info("**Instruções de Interação:**\n"
             "1. **Hover:** Sobre qualquer nó para ver as métricas SNA.\n"
             "2. **Clique:** Num nó para isolar a rede.\n"
             "3. **Clique fora:** No espaço negro para restaurar.")
 
-# Filtro e Geração
+# Filtro Principal de Dados para a Rede Visual
 dados_filtrados = dados_completos[:n_registros]
 caminho_html, num_nos, num_arestas, df_completo = gerar_grafo_e_metricas(dados_filtrados)
 
 # KPIs
 st.markdown("### 📊 Topologia da Rede Atual")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Documentos", len(dados_filtrados))
+col1.metric("Documentos Renderizados", len(dados_filtrados))
 col2.metric("Entidades (Nós)", num_nos)
 col3.metric("Conexões (Arestas)", num_arestas)
 col4.metric("Densidade", f"{(num_arestas / num_nos):.3f}" if num_nos > 0 else "0")
 
 st.markdown("---")
 
-# Layout em duas colunas: Uma para o Grafo, outra para o Ranking
+# Layout em duas colunas: Uma para o Grafo, outra para o Ranking e Filtros
 col_grafo, col_tabela = st.columns([2, 1])
 
 with col_grafo:
@@ -212,37 +203,67 @@ with col_grafo:
         components.html(f.read(), height=650, scrolling=False)
 
 with col_tabela:
-    st.markdown("### 🏆 Top 10 Hubs")
-    st.write("Identifique os atores mais influentes da rede.")
+    st.markdown("### 🏆 Top 10 Hubs Analíticos")
     
-    # Controlo interativo para escolher a métrica do ranking
-    metrica_alvo = st.selectbox(
-        "Ordenar o ranking por:",
-        options=["Betweenness", "Degree Centrality", "Grau Absoluto"]
+    # --- FILTROS MULTIPLOS DA TABELA ---
+    categorias_disponiveis = df_completo['Categoria'].unique().tolist()
+    categorias_selecionadas = st.multiselect(
+        "Filtre as Categorias:",
+        options=categorias_disponiveis,
+        default=categorias_disponiveis  # Por padrão, mostra todas
     )
     
-    # Processamento do Pandas: Ordenar e extrair o Top 10
-    df_top10 = df_completo.sort_values(by=metrica_alvo, ascending=False).head(10)
-    
-    # Formatação visual dos números quebrados para a tabela não ficar poluída
-    df_visual = df_top10.copy()
-    df_visual['Degree Centrality'] = df_visual['Degree Centrality'].apply(lambda x: f"{x:.4f}")
-    df_visual['Betweenness'] = df_visual['Betweenness'].apply(lambda x: f"{x:.4f}")
-    
-    # Exibe a tabela moderna no Streamlit
-    st.dataframe(
-        df_visual[['Entidade (Nó)', 'Categoria', metrica_alvo]], 
-        use_container_width=True,
-        hide_index=True
+    todas_metricas = ["Grau Absoluto", "Degree Centrality", "Betweenness"]
+    metricas_selecionadas = st.multiselect(
+        "Métricas para exibir na tabela:",
+        options=todas_metricas,
+        default=["Grau Absoluto", "Betweenness"]
     )
     
-    # Botão de Exportação Formal (CSV)
-    csv_data = df_top10.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Exportar Tabela Completa (CSV)",
-        data=csv_data,
-        file_name=f"top10_metricas_{metrica_alvo.lower().replace(' ', '_')}.csv",
-        mime="text/csv"
+    # Proteção caso o utilizador desmarque todas as métricas
+    if not metricas_selecionadas:
+        st.warning("Selecione pelo menos uma métrica para exibir.")
+        metricas_selecionadas = ["Grau Absoluto"]
+        
+    metrica_ordenacao = st.selectbox(
+        "Ordenar o Ranking (Top 10) por:",
+        options=metricas_selecionadas
     )
     
-    st.caption("💡 *Dica: Para exportar em PDF, utilize o atalho Ctrl+P (ou Cmd+P) no seu navegador e selecione 'Guardar como PDF'. O design da tabela será mantido perfeitamente.*")
+    st.markdown("<br>", unsafe_allow_html=True) # Espaçamento
+    
+    # --- PROCESSAMENTO DO PANDAS (FILTROS) ---
+    # 1. Filtra pelas categorias escolhidas
+    df_filtrado = df_completo[df_completo['Categoria'].isin(categorias_selecionadas)]
+    
+    # 2. Ordena pela métrica alvo e extrai o Top 10
+    if not df_filtrado.empty:
+        df_top10 = df_filtrado.sort_values(by=metrica_ordenacao, ascending=False).head(10)
+        
+        # 3. Formatação visual (apenas para a exibição na tela)
+        df_visual = df_top10.copy()
+        if 'Degree Centrality' in df_visual.columns:
+            df_visual['Degree Centrality'] = df_visual['Degree Centrality'].apply(lambda x: f"{x:.4f}")
+        if 'Betweenness' in df_visual.columns:
+            df_visual['Betweenness'] = df_visual['Betweenness'].apply(lambda x: f"{x:.4f}")
+        
+        # Seleciona as colunas dinâmicas escolhidas pelo utilizador
+        colunas_finais = ['Entidade (Nó)', 'Categoria'] + metricas_selecionadas
+        
+        st.dataframe(
+            df_visual[colunas_finais], 
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # --- EXPORTAÇÃO CSV ---
+        # Exportamos os dados reais (df_top10) sem a conversão de texto para não atrapalhar cálculos no Excel
+        csv_data = df_top10[colunas_finais].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Exportar Ranking (CSV)",
+            data=csv_data,
+            file_name=f"top10_{metrica_ordenacao.lower().replace(' ', '_')}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("Nenhuma entidade encontrada para as categorias selecionadas.")

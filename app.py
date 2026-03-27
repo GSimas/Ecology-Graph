@@ -70,12 +70,25 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 # --- FUNÇÕES DE EXTRAÇÃO AO VIVO (OAI-PMH) ---
 
-@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
+@@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
 def obter_programas_ufsc():
+    """Conecta ao repositório da UFSC e lista apenas os Programas de Pós-Graduação."""
     try:
         sickle = Sickle('https://repositorio.ufsc.br/oai/request')
         sets = sickle.ListSets()
-        colecoes = {s.setName: s.setSpec for s in sets if s.setSpec.startswith('col_')}
+        colecoes = {}
+        
+        for s in sets:
+            if s.setSpec.startswith('col_'):
+                # Normaliza o nome (remove acentos e passa para minúsculas) para a verificação ser infalível
+                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', s.setName.lower()) if unicodedata.category(c) != 'Mn')
+                
+                # Filtro Lexical: Retém apenas coleções que sejam inequivocamente de Pós-Graduação
+                if "pos-graduacao" in nome_norm or "mestrado" in nome_norm or "doutorado" in nome_norm or "teses e dissertacoes" in nome_norm:
+                    # Limpa o nome original caso tenha algum prefixo indesejado para ficar mais bonito no menu
+                    nome_exibicao = s.setName.replace("Teses e Dissertações - ", "").strip()
+                    colecoes[nome_exibicao] = s.setSpec
+                    
         return dict(sorted(colecoes.items()))
     except Exception as e:
         st.error(f"Erro ao conectar com a UFSC: {e}")

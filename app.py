@@ -9,10 +9,12 @@ import json
 import re
 from collections import Counter
 import itertools
+import unicodedata
+from sickle import Sickle
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Ecologia do Conhecimento UFSC",
+    page_title="Plataforma Universal de Ecologia",
     page_icon="🌌",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -60,15 +62,87 @@ if 'grafo_pronto' not in st.session_state: st.session_state['grafo_pronto'] = Fa
 if 'tabela_pronta' not in st.session_state: st.session_state['tabela_pronta'] = False
 if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia_pronta'] = False
 
-# --- FUNÇÕES DE BACK-END INDEPENDENTES ---
-@st.cache_data
-def carregar_dados_locais():
+
+
+
+
+
+
+# --- FUNÇÕES DE EXTRAÇÃO AO VIVO (OAI-PMH) ---
+
+@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
+def obter_programas_ufsc():
     try:
-        with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        st.error("Ficheiro base_ppgegc.json não encontrado no repositório.")
-        return []
+        sickle = Sickle('https://repositorio.ufsc.br/oai/request')
+        sets = sickle.ListSets()
+        colecoes = {s.setName: s.setSpec for s in sets if s.setSpec.startswith('col_')}
+        return dict(sorted(colecoes.items()))
+    except Exception as e:
+        st.error(f"Erro ao conectar com a UFSC: {e}")
+        return {}
+
+def extrair_melhor_ano(lista_datas):
+    if not lista_datas: return None
+    anos = [int(m) for d in lista_datas for m in re.findall(r'\b(19\d{2}|20\d{2})\b', str(d))]
+    return str(min(anos)) if anos else None
+
+def normalizar_nome(nome):
+    if not nome: return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn').strip().title()
+
+def normalizar_palavra_chave(pk):
+    if not pk: return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', pk.lower().strip()) if unicodedata.category(c) != 'Mn')
+
+def identificar_nivel(tipos, titulo=""):
+    tipos_str = " ".join(tipos).lower()
+    titulo_lower = titulo.lower()
+    if 'doctoral' in tipos_str or 'tese' in tipos_str or 'tese' in titulo_lower: return 'Tese (Doutorado)'
+    if 'master' in tipos_str or 'disserta' in tipos_str or 'disserta' in titulo_lower: return 'Dissertação (Mestrado)'
+    return 'Outros'
+
+def realizar_extracao(set_spec, status_placeholder):
+    sickle = Sickle('https://repositorio.ufsc.br/oai/request')
+    try: records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
+    except: return []
+
+    dados_extraidos = []
+    titulos_vistos = set()
+
+    for i, record in enumerate(records):
+        if i % 50 == 0:
+            status_placeholder.info(f"⏳ A extrair dados do servidor da UFSC... Documentos processados: **{i}**")
+
+        if record.header.deleted or not record.metadata: continue
+            
+        try:
+            meta = record.metadata
+            titulo = meta.get('title', [''])[0].strip()
+            if not titulo or titulo in titulos_vistos: continue
+            titulos_vistos.add(titulo)
+            
+            autores = [normalizar_nome(a) for a in meta.get('creator', []) if a.strip()]
+            ano_real = extrair_melhor_ano(meta.get('date', []))
+            nivel = identificar_nivel(meta.get('type', []), titulo)
+            
+            contrib = [normalizar_nome(c) for c in meta.get('contributor', []) if "universidade" not in c.lower() and "ufsc" not in c.lower()]
+            orientador = contrib[0] if len(contrib) > 0 else None
+            co_orientadores = contrib[1:] if len(contrib) > 1 else []
+            
+            pks = list(set([normalizar_palavra_chave(pk) for pk in meta.get('subject', []) if pk]))
+            
+            dados_extraidos.append({
+                'titulo': titulo, 'nivel_academico': nivel, 'autores': autores,
+                'orientador': orientador, 'co_orientadores': co_orientadores,
+                'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 'ano': ano_real
+            })
+        except: continue
+
+    status_placeholder.success(f"✅ Extração concluída! {len(dados_extraidos)} documentos capturados.")
+    return dados_extraidos
+
+# (MANTENHA AS FUNÇÕES `obter_dataframe_metricas`, `preparar_dados_base_df`, `preparar_csv_exportacao`, `gerar_html_pyvis`, `gerar_html_coocorrencia` etc. EXATAMENTE COMO ESTÃO)
+
 
 @st.cache_data
 def obter_dataframe_metricas(dados_recorte):
@@ -296,9 +370,58 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
 
 # --- INÍCIO DA INTERFACE FRONT-END ---
 
-dados_completos = carregar_dados_locais()
-if not dados_completos:
-    st.stop()
+# ==========================================
+# INÍCIO DA INTERFACE (GESTOR DE EXTRAÇÃO VS DASHBOARD)
+# ==========================================
+
+if 'dados_completos' not in st.session_state:
+    st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
+    st.markdown("O sistema está conectado ao servidor OAI-PMH da universidade para listar os programas disponíveis.")
+    
+    with st.spinner("A mapear coleções na UFSC..."):
+        colecoes_disponiveis = obter_programas_ufsc()
+    
+    if colecoes_disponiveis:
+        with st.form("form_extracao"):
+            st.markdown("### Selecione o Programa para Analisar")
+            programa_selecionado = st.selectbox("Lista de Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
+            st.info("⚠️ A extração ao vivo pode demorar alguns minutos. Não feche a janela.")
+            btn_extrair = st.form_submit_button("Iniciar Extração ao Vivo", type="primary")
+            
+        status_box = st.empty()
+        
+        if btn_extrair:
+            set_spec_alvo = colecoes_disponiveis[programa_selecionado]
+            dados = realizar_extracao(set_spec_alvo, status_box)
+            
+            if dados:
+                st.session_state['dados_completos'] = dados
+                st.session_state['nome_programa'] = programa_selecionado
+                st.rerun() # Recarrega para mostrar o Dashboard
+    else:
+        st.error("Não foi possível aceder à lista da UFSC neste momento.")
+    st.stop() # Para a execução aqui se ainda não houver dados extraídos
+
+
+# --- O DASHBOARD (SÓ APARECE APÓS A EXTRAÇÃO) ---
+dados_completos = st.session_state['dados_completos']
+nome_programa = st.session_state['nome_programa']
+
+st.title(f"🌌 Ecologia do Conhecimento")
+st.subheader(f"Base de Dados: {nome_programa}")
+
+# Botão na barra lateral para voltar e escolher outro programa
+if st.sidebar.button("🔄 Trocar de Programa / Nova Extração", type="primary"):
+    del st.session_state['dados_completos']
+    st.rerun()
+
+# ---------------------------------------------------------
+# DAQUI PARA BAIXO, MANTENHA O SEU CÓDIGO INTACTO!
+# ---------------------------------------------------------
+# (Onde começam as listas: niveis_disponiveis = sorted(list(set...)))
+# (Os Cards estatísticos, Seção 1 do Grafo, Seção 2 Ranking, Seção 3 Evolução, etc.)
+
+
 
 # --- PREPARAÇÃO DAS LISTAS GLOBAIS ---
 niveis_disponiveis = sorted(list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos])))

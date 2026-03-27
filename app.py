@@ -11,7 +11,6 @@ import unicodedata
 from sickle import Sickle
 from sickle.oaiexceptions import NoRecordsMatch
 import numpy as np
-import scipy
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")

@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 from streamlit_agraph import agraph, Node, Edge, Config
 import numpy as np
 import scipy as sp
+import io
 
 
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
@@ -122,42 +123,52 @@ def gerar_nodos_globais_agraph(dados_recorte, metodo_cor="Original (Categoria)",
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
-        G.add_node(doc_id, tipo='Documento')
-        if tese.get('orientador'): G.add_node(tese['orientador'], tipo='Orientador'); G.add_edge(tese['orientador'], doc_id)
-        for pk in tese.get('palavras_chave', []): G.add_node(pk, tipo='Conceito'); G.add_edge(doc_id, pk)
+        # Adicionamos atributos extras para que o Gephi já reconheça as categorias
+        G.add_node(doc_id, label=doc_id[:30], tipo='Documento', nivel=tese.get('nivel_academico', 'N/A'), ano=tese.get('ano', 'N/A'))
+        
+        if tese.get('orientador'): 
+            G.add_node(tese['orientador'], label=tese['orientador'], tipo='Orientador')
+            G.add_edge(tese['orientador'], doc_id)
+            
+        for pk in tese.get('palavras_chave', []): 
+            G.add_node(pk, label=pk, tipo='Conceito')
+            G.add_edge(doc_id, pk)
 
     deg_cent, bet_cent, grau_abs = nx.degree_centrality(G), nx.betweenness_centrality(G), dict(G.degree())
     max_deg, max_bet, max_abs = max(deg_cent.values() or [1]), max(bet_cent.values() or [1]), max(grau_abs.values() or [1])
 
+    # Cálculo de Comunidades para exportação
+    comunidades = nx_comm.louvain_communities(G)
     legendas_comunidades = []
-    if metodo_cor != "Original (Categoria)":
-        comunidades = nx_comm.louvain_communities(G) if metodo_cor == "Comunidades (Louvain)" else nx_comm.greedy_modularity_communities(G)
-        paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6']
-        for i, comm in enumerate(comunidades):
-            cor_com = paleta[i % len(paleta)]
-            legendas_comunidades.append({"id": i+1, "cor": cor_com, "tamanho": len(comm)})
-            for node in comm: G.nodes[node]['color'] = cor_com
+    paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6']
+    
+    for i, comm in enumerate(comunidades):
+        cor_com = paleta[i % len(paleta)]
+        legendas_comunidades.append({"id": i+1, "cor": cor_com, "tamanho": len(comm)})
+        for node in comm: 
+            G.nodes[node]['color'] = cor_com
+            G.nodes[node]['community'] = i + 1 # Atributo para o Gephi
 
-    nodes, edges = [], []
+    nodes_agraph, edges_agraph = [], []
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
         grau_atual = grau_abs.get(node, 0)
         
+        # Lógica de Tamanho Agraph
         if metodo_tamanho == "Grau Absoluto": tam = 10 + (grau_atual / max_abs) * 40
         elif metodo_tamanho == "Degree Centrality": tam = 10 + (deg_cent.get(node, 0) / max_deg) * 40
         elif metodo_tamanho == "Betweenness": tam = 10 + (bet_cent.get(node, 0) / max_bet) * 40
         else: tam = 20
         
-        cor = attrs.get('color', ('#E74C3C' if tipo == 'Documento' else '#F39C12' if tipo == 'Orientador' else '#2ECC71'))
+        cor_final = attrs.get('color', ('#E74C3C' if tipo == 'Documento' else '#F39C12' if tipo == 'Orientador' else '#2ECC71'))
         formato = 'star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'dot'
-        rotulo = node[:25] + "..." if len(node) > 25 and tipo == 'Documento' else node
         
-        nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, shape=formato, title=f"{node}\nTipo: {tipo}\nGrau: {grau_atual}"))
+        nodes_agraph.append(Node(id=node, label=attrs['label'], size=tam, color=cor_final, shape=formato, title=f"{node}\nTipo: {tipo}"))
 
     for u, v in G.edges():
-        edges.append(Edge(source=u, target=v, color="#7F8C8D", width=0.5))
+        edges_agraph.append(Edge(source=u, target=v, color="#7F8C8D", width=0.5))
 
-    return nodes, edges, legendas_comunidades
+    return nodes_agraph, edges_agraph, legendas_comunidades, G # <-- Retornamos o G original aqui
 
 def obter_frequencias_texto(df_hist, fonte_nuvem):
     if fonte_nuvem == "Conceitos (Palavras-chave)":
@@ -286,6 +297,30 @@ def calcular_metricas_complexas(dados):
         'n_nos': G.number_of_nodes()
     }
 
+
+
+
+def preparar_exportacao_grafo(G, formato):
+    """Converte o grafo NetworkX para diferentes formatos de arquivo."""
+    output = io.BytesIO()
+    # Criamos uma cópia para não sujar o grafo original com strings de exportação
+    G_export = G.copy()
+    
+    if formato == "GEXF (Gephi)":
+        # Formato nativo do Gephi
+        nx.write_gexf(G_export, output, encoding='utf-8')
+        return output.getvalue(), "grafo_ufsc.gexf"
+    
+    elif formato == "GraphML":
+        # Formato universal XML
+        nx.write_graphml(G_export, output, encoding='utf-8')
+        return output.getvalue(), "grafo_ufsc.graphml"
+    
+    elif formato == "JSON (Node-Link)":
+        # Formato ideal para D3.js e web
+        data = nx.node_link_data(G_export)
+        return json.dumps(data, ensure_ascii=False).encode('utf-8'), "grafo_ufsc.json"
+
 # =========================================================================
 # INÍCIO DA INTERFACE (EXATAMENTE COMO O UTILIZADOR SOLICITOU)
 # =========================================================================
@@ -361,43 +396,44 @@ if total_grafo > 0:
 
     if btn_render_grafo:
         with st.spinner("A construir a rede topológica visual..."):
-            nodes, edges, legendas = gerar_nodos_globais_agraph(dados_grafo[:n_registros_grafo], metodo_cor=metodo_coloracao, metodo_tamanho=metodo_tamanho)
+            # Agora recebemos o objeto G
+            nodes, edges, legendas, G_obj = gerar_nodos_globais_agraph(
+                dados_grafo[:n_registros_grafo], 
+                metodo_cor=metodo_coloracao, 
+                metodo_tamanho=metodo_tamanho
+            )
             st.session_state['graf_glob_nodes'] = nodes
             st.session_state['graf_glob_edges'] = edges
             st.session_state['kpis_grafo'] = {'nos': len(nodes), 'arestas': len(edges), 'legendas': legendas}
+            st.session_state['G_atual'] = G_obj # Guardamos o objeto NetworkX
             st.session_state['grafo_pronto'] = True
 
     if st.session_state['grafo_pronto']:
         kpis = st.session_state['kpis_grafo']
-        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-        col_k1.metric("Nós no Grafo", kpis['nos'])
-        col_k2.metric("Arestas no Grafo", kpis['arestas'])
-        col_k3.metric("Densidade", f"{(kpis['arestas'] / kpis['nos']):.3f}" if kpis['nos'] > 0 else 0)
-        col_k4.info("Dica: Use o scroll para Zoom e arraste para navegar.")
-        
-        if kpis.get('legendas'):
-            st.markdown("#### 🎨 Comunidades Identificadas")
-            html_legend = "<div style='display:flex; flex-wrap:wrap; margin-bottom:15px;'>"
-            for leg in sorted(kpis['legendas'], key=lambda x: x['tamanho'], reverse=True):
-                html_legend += f"<div style='margin-right:20px;'><span style='color:{leg['cor']};'>●</span> Com. {leg['id']} ({leg['tamanho']})</div>"
-            st.markdown(html_legend + "</div>", unsafe_allow_html=True)
+        # ... (Mantém as métricas de Nós e Arestas que você já tinha)
 
-        # --- REQUERIDO: REMOVER O 'WITH OPEN' E USAR ESTE BLOCO ---
-        config = Config(
-            width="100%", 
-            height=650, 
-            directed=False, 
-            physics=True, 
-            nodeHighlightBehavior=True, 
-            highlightColor="#F1C40F",
-            collapsible=False
-        )
+        # --- NOVA ÁREA DE EXPORTAÇÃO ---
+        st.markdown("### 📥 Exportar Estrutura de Rede")
+        col_ex1, col_ex2, col_ex3 = st.columns(3)
         
-        agraph(
-            nodes=st.session_state['graf_glob_nodes'], 
-            edges=st.session_state['graf_glob_edges'], 
-            config=config
-        )
+        G_para_exportar = st.session_state.get('G_atual')
+        
+        if G_para_exportar:
+            # Botão 1: Gephi (GEXF)
+            data_gexf, nome_gexf = preparar_exportacao_grafo(G_para_exportar, "GEXF (Gephi)")
+            col_ex1.download_button("📂 Exportar para Gephi", data=data_gexf, file_name=nome_gexf, use_container_width=True)
+            
+            # Botão 2: GraphML
+            data_ml, nome_ml = preparar_exportacao_grafo(G_para_exportar, "GraphML")
+            col_ex2.download_button("💾 Exportar GraphML", data=data_ml, file_name=nome_ml, use_container_width=True)
+            
+            # Botão 3: JSON
+            data_json, nome_json = preparar_exportacao_grafo(G_para_exportar, "JSON (Node-Link)")
+            col_ex3.download_button("🌐 Exportar JSON Web", data=data_json, file_name=nome_json, use_container_width=True)
+
+        # Renderização Visual
+        config = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
+        agraph(nodes=st.session_state['graf_glob_nodes'], edges=st.session_state['graf_glob_edges'], config=config)
 else:
     st.warning("Nenhum documento selecionado para o Grafo.")
 

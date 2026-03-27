@@ -11,3 +11,4 @@ streamlit-agraph
 numpy
 scipy
 scikit-learn
+google-generativeai

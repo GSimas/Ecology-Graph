@@ -188,13 +188,64 @@ with tab4:
                              font_size=12, template="plotly_dark", height=800)
     st.plotly_chart(fig_sankey, use_container_width=True)
 
-# --- ABA 1 & 2 (Resumo para o código não ficar gigante) ---
+# --- ABA 1: BURST DETECTION ---
 with tab1:
-    st.subheader("Explosões de Paradigmas")
-    # ... (Manter o código de Burst Detection que já enviamos anteriormente)
-    st.info("Configure os parâmetros no formulário para detetar picos de frequência.")
+    st.subheader("Deteção de Emergências e Explosões Epistémicas")
+    with st.form("form_burst"):
+        col1, col2, col3 = st.columns(3)
+        with col1: niveis_sel = st.multiselect("Nível:", sorted(df_base['nivel_academico'].unique()), default=sorted(df_base['nivel_academico'].unique()))
+        with col2: min_freq = st.number_input("Frequência Mínima:", 2, 50, 5)
+        with col3: z_score = st.slider("Sensibilidade (Z-Score):", 1.0, 3.0, 1.5, 0.1)
+        btn_burst = st.form_submit_button("Analisar Explosões", type="primary")
 
-with tab2:
-    st.subheader("Genealogia e Dinastias")
-    # ... (Manter o código de Genealogia que já enviamos anteriormente)
-    st.write("Mapeie a descendência académica dos patriarcas e matriarcas do PPGEGC.")
+    if btn_burst:
+        df_burst = detetar_explosoes(df_base[df_base['nivel_academico'].isin(niveis_sel)], min_freq, z_score)
+        if not df_burst.empty and df_burst['Em_Explosao'].any():
+            eventos = df_burst[df_burst['Em_Explosao']]
+            
+            # Visualização Timeline
+            fig_timeline = px.scatter(eventos, x="Ano", y="palavras_chave", size="Frequencia", color="palavras_chave",
+                                     title="Momentos de Rutura Paradigmática", template="plotly_dark")
+            st.plotly_chart(fig_timeline, use_container_width=True)
+            
+            st.dataframe(eventos[['Ano', 'palavras_chave', 'Frequencia']].sort_values(by='Ano', ascending=False), use_container_width=True)
+        else:
+            st.info("Nenhuma explosão detetada com estes parâmetros.")
+
+# --- ABA 2: GENEALOGIA ACADÉMICA ---
+with aba2:
+    st.subheader("DNA Académico: Linhagens e Dinastias do PPGEGC")
+    st.markdown("""
+    Este grafo direcionado revela como o conhecimento flui através das gerações. 
+    - **Nós Vermelhos (🏛️):** Orientadores que deram origem a linhagens.
+    - **Nós Cor-de-Laranja (🎓):** Pesquisadores que foram alunos e hoje são Orientadores (os elos da Dinastia).
+    - **Nós Azuis:** Egressos e pesquisadores da rede.
+    """)
+    
+    todos_orientadores = sorted(list(set([d.get('orientador') for d in dados_brutos if d.get('orientador')])))
+    
+    with st.form("form_genealogia"):
+        orientadores_foco = st.multiselect(
+            "Selecione o(s) Patriarca(s)/Matriarca(s) para isolar uma Dinastia:",
+            options=todos_orientadores,
+            help="Se deixar vazio, mostrará a rede completa (pode ser muito densa)."
+        )
+        btn_genealogia = st.form_submit_button("Mapear Descendência", type="primary")
+
+    if btn_genealogia:
+        path_gen, nos_gen, arestas_gen = gerar_grafo_genealogico(dados_brutos, orientadores_foco)
+        
+        col_m1, col_m2 = st.columns(2)
+        col_m1.metric("Membros na Linhagem", nos_gen)
+        col_m2.metric("Vínculos de Orientação", arestas_gen)
+        
+        with open(path_gen, 'r', encoding='utf-8') as f:
+            components.html(f.read(), height=800, scrolling=False)
+            
+    st.info("💡 **Dica Visual:** O grafo é hierárquico. Os orientadores raiz aparecem no topo, e os seus 'descendentes' académicos fluem para baixo.")
+
+
+
+# Rodapé de Navegação
+st.markdown("---")
+st.caption("Fronteiras Avançadas de Ecologia do Conhecimento | PPGEGC UFSC")

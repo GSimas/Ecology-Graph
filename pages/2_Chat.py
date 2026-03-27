@@ -6,7 +6,7 @@ from groq import Groq
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Analista IA de Redes | PPGEGC",
+    page_title="Chatbot",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"

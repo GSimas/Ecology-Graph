@@ -417,6 +417,84 @@ def obter_frequencias_texto(df_hist, fonte_nuvem):
         palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
         return dict(Counter(palavras_limpas).most_common(100))
 
+@st.cache_resource
+def gerar_html_ego_grafo(dados_recorte, termo_foco, grau_separacao=1):
+    """Gera um sub-grafo focado num único nó e nos seus vizinhos diretos/indiretos."""
+    G = nx.Graph()
+    
+    # 1. Constrói a rede global silenciosamente
+    for tese in dados_recorte:
+        doc_id = tese['titulo']
+        G.add_node(doc_id, tipo='Documento', ano=tese.get('ano', 'N/A'), nivel=tese.get('nivel_academico', 'N/A'))
+        
+        for autor in tese.get('autores', []):
+            G.add_node(autor, tipo='Autor')
+            G.add_edge(autor, doc_id)
+            
+        if tese.get('orientador'):
+            ori = tese['orientador']
+            G.add_node(ori, tipo='Orientador')
+            G.add_edge(ori, doc_id)
+            
+        for co in tese.get('co_orientadores', []):
+            G.add_node(co, tipo='Co-orientador')
+            G.add_edge(co, doc_id)
+            
+        for pk in tese.get('palavras_chave', []):
+            G.add_node(pk, tipo='Conceito')
+            G.add_edge(pk, doc_id)
+
+    if termo_foco not in G.nodes():
+        return None
+
+    # 2. Extrai a "Órbita" (Ego-Graph) até ao grau de separação desejado
+    ego_G = nx.ego_graph(G, termo_foco, radius=grau_separacao)
+
+    # 3. Configura o PyVis
+    net = Network(height='550px', width='100%', bgcolor='#222222', font_color='white', directed=False, cdn_resources='remote')
+    graus = dict(ego_G.degree())
+
+    for node, attrs in ego_G.nodes(data=True):
+        tipo = attrs.get('tipo', 'Desconhecido')
+        tam = 15 + (graus[node] * 1.5)
+
+        # Destaca o "Sol" (Nó Central) do sistema solar
+        if node == termo_foco:
+            tam = 40
+            cor = '#FFFFFF' # Branco brilhante para o centro
+            borda = 5
+        else:
+            borda = 1
+            if tipo == 'Documento': cor = '#E74C3C'
+            elif tipo == 'Autor': cor = '#3498DB'
+            elif tipo == 'Orientador': cor = '#F39C12'
+            elif tipo == 'Co-orientador': cor = '#9B59B6'
+            elif tipo == 'Conceito': cor = '#2ECC71'
+            else: cor = '#95A5A6'
+
+        hover_text = f"<b>{node}</b><br>Tipo: {tipo}<br>Conexões locais: {graus[node]}"
+        if tipo == 'Documento':
+            hover_text += f"<br>Ano: {attrs.get('ano')}<br>Nível: {attrs.get('nivel')}"
+
+        ego_G.nodes[node]['title'] = hover_text
+        ego_G.nodes[node]['color'] = cor
+        ego_G.nodes[node]['size'] = tam
+        ego_G.nodes[node]['borderWidth'] = borda
+        
+        # Altera as formas para ajudar na distinção visual
+        if tipo == 'Documento': ego_G.nodes[node]['shape'] = 'square'
+        elif tipo == 'Orientador': ego_G.nodes[node]['shape'] = 'star'
+        elif tipo == 'Conceito': ego_G.nodes[node]['shape'] = 'triangle'
+        else: ego_G.nodes[node]['shape'] = 'dot'
+
+    net.from_nx(ego_G)
+    # Física otimizada para grafos pequenos expandirem como uma teia
+    net.set_options('{"physics": {"barnesHut": {"gravitationalConstant": -8000, "springLength": 120}, "stabilization": {"enabled": true, "iterations": 50}}, "interaction": {"hover": true, "selectConnectedEdges": true}}')
+    
+    path = "temp_ego.html"
+    net.save_graph(path)
+    return path
+
 def renderizar_nuvem_interativa_html(word_freq_dict):
     data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
     html_content = f"""
@@ -730,6 +808,29 @@ if termo_ativo:
             st.caption("A Comunidade indica o agrupamento matemático/temático a que este nó pertence na rede.")
         else:
             st.warning("Métricas SNA não disponíveis isoladamente.")
+
+    # --- NOVO: GRAFO EGOCÊNTRICO DINÂMICO ---
+    st.markdown("---")
+    st.markdown(f"### 🌌 Órbita de Relacionamentos: {termo_ativo}")
+    st.markdown("Visualize as ligações em torno deste item. Use o seletor abaixo para expandir a rede e descobrir os 'vizinhos dos vizinhos'.")
+    
+    # Controlo de Expansão
+    grau_expansao = st.slider(
+        "Nível de Expansão (Grau de Separação):", 
+        min_value=1, 
+        max_value=3, 
+        value=1, 
+        step=1,
+        help="1 = Apenas conexões diretas. 2 = Inclui conexões das conexões. 3 = Rede vasta."
+    )
+
+    with st.spinner("A mapear o ecossistema local..."):
+        path_ego = gerar_html_ego_grafo(dados_completos, termo_ativo, grau_expansao)
+        if path_ego:
+            with open(path_ego, 'r', encoding='utf-8') as f:
+                components.html(f.read(), height=570, scrolling=False)
+        else:
+            st.error("Erro ao desenhar o grafo para este termo.")
 
 st.markdown("---")
 

@@ -14,7 +14,6 @@ import numpy as np
 import scipy as sp
 import io
 
-
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
 chaves_necessarias = {
     'grafo_pronto': False,
@@ -170,6 +169,7 @@ def gerar_nodos_globais_agraph(dados_recorte, metodo_cor="Original (Categoria)",
 
     return nodes_agraph, edges_agraph, legendas_comunidades, G # <-- Retornamos o G original aqui
 
+
 def obter_frequencias_texto(df_hist, fonte_nuvem):
     if fonte_nuvem == "Conceitos (Palavras-chave)":
         lista_c = []
@@ -296,7 +296,6 @@ def calcular_metricas_complexas(dados):
         'constraint_avg': np.mean(list(constraint_dict.values())),
         'n_nos': G.number_of_nodes()
     }
-
 
 
 

@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Ecologia Avançada | PPGEGC",
+    page_title="Análise Avançada",
     page_icon="🧪",
     layout="wide",
     initial_sidebar_state="expanded"

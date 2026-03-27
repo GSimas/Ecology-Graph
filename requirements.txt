@@ -10,3 +10,4 @@ groq
 streamlit-agraph
 numpy
 scipy
+scikit-learn

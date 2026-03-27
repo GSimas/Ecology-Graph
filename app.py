@@ -70,7 +70,7 @@ if 'coocorrencia_pronta' not in st.session_state: st.session_state['coocorrencia
 
 # --- FUNÇÕES DE EXTRAÇÃO AO VIVO (OAI-PMH) ---
 
-@@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
+@st.cache_data(ttl=86400) # Cache de 1 dia para a lista de programas
 def obter_programas_ufsc():
     """Conecta ao repositório da UFSC e lista apenas os Programas de Pós-Graduação."""
     try:

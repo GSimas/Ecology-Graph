@@ -222,7 +222,17 @@ st.header("🕸️ Topologia e Grafo Interativo")
 with st.form("form_grafo"):
     col_g1, col_g2, col_g3 = st.columns([2, 2, 1])
     with col_g1:
-        n_registros_grafo = st.slider("Volume de Documentos para a Rede Visual:", 5, total_filtrado, min(40, total_filtrado), 5)
+        # Lógica dinâmica para evitar quebra se houver menos de 5 documentos
+        min_docs = min(5, total_filtrado)
+        passo = 5 if total_filtrado >= 5 else 1
+        
+        n_registros_grafo = st.slider(
+            "Volume de Documentos para a Rede Visual:", 
+            min_value=min_docs, 
+            max_value=total_filtrado, 
+            value=min(40, total_filtrado), 
+            step=passo
+        )
     with col_g2:
         metodo_coloracao = st.selectbox(
             "Mapeamento de Cores da Rede:", 
@@ -260,7 +270,17 @@ with st.form("form_tabela"):
     
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
-        n_registros_tabela = st.slider("Documentos analisados matematicamente:", 5, total_filtrado, total_filtrado, 5)
+        # Reutilizamos a mesma lógica dinâmica
+        min_docs = min(5, total_filtrado)
+        passo = 5 if total_filtrado >= 5 else 1
+        
+        n_registros_tabela = st.slider(
+            "Documentos analisados matematicamente:", 
+            min_value=min_docs, 
+            max_value=total_filtrado, 
+            value=total_filtrado, 
+            step=passo
+        )
     with col_t2:
         top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
 

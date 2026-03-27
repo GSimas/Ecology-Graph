@@ -40,84 +40,81 @@ def navegar_para(novo_tipo, novo_termo):
 
 # --- FUNÇÕES DE LÓGICA TEMÁTICA ---
 def aplicar_macrotemas(dados, api_key, num_topicos=12):
-    """
-    Motor Híbrido: Agrupamento Estatístico (NMF) + Nomenclatura Generativa (Groq/LLM).
-    """
-    stopwords_completas = [
+    client = Groq(api_key=api_key)
+    
+    # 1. Limpeza de Texto (Stopwords reforçadas)
+    stopwords_universais = [
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
-        "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser", 
-        "quando", "muito", "há", "nos", "já", "está", "eu", "também", "só", "pelo", "pela", "até", "isso", "ela", 
-        "entre", "era", "depois", "sem", "mesmo", "aos", "ter", "seus", "quem", "nas", "me", "esse", "eles", "estão", 
-        "você", "tinha", "foram", "essa", "num", "nem", "suas", "meu", "às", "minha", "têm", "numa", "pelos", "elas", 
-        "havia", "seja", "qual", "será", "nós", "tenho", "lhe", "deles", "essas", "esses", "pelas", "este", "fosse", "dele",
-        "estudo", "análise", "trabalho", "pesquisa", "objetivo", "resultados", "conclusão", "dissertação", "tese", "ufsc", "sobre",
-        "neste", "desta", "sendo", "assim", "através", "partir", "uso", "método", "the", "of", "and", "in", "to", "is", "for"
+        "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
+        "study", "analysis", "based", "using", "results", "model", "system", "with", "from", "data"
     ]
 
     textos = []
     for doc in dados:
         texto_bruto = f"{doc.get('titulo', '')} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
-        texto_limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', texto_bruto).lower()
-        textos.append(texto_limpo)
+        textos.append(re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', texto_bruto).lower())
 
-    n_topicos_seguro = min(num_topicos, max(1, len(textos) // 3))
-    if n_topicos_seguro < 2:
-        for doc in dados: doc['macrotema'] = "Amostra Insuficiente"
-        return dados
-
-    # 1. Agrupamento Matemático (Clusterização)
-    vectorizer = TfidfVectorizer(max_df=0.85, min_df=2, stop_words=stopwords_completas, max_features=1500)
-    try:
-        tfidf_matrix = vectorizer.fit_transform(textos)
-    except ValueError:
-        for doc in dados: doc['macrotema'] = "Vocabulário Insuficiente"
-        return dados
-
-    nmf_model = NMF(n_components=n_topicos_seguro, random_state=42, max_iter=500)
+    # 2. Processamento Matemático (NMF)
+    vectorizer = TfidfVectorizer(max_df=0.85, min_df=2, stop_words=stopwords_universais, max_features=1000)
+    tfidf_matrix = vectorizer.fit_transform(textos)
+    nmf_model = NMF(n_components=num_topicos, random_state=42, max_iter=500)
     nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
     feature_names = vectorizer.get_feature_names_out()
-    
-    # 2. IA Generativa para Nomenclatura
-    client = Groq(api_key=api_key)
-    nomes_topicos = []
-    
+
+    # Preparar a lista de palavras-chave de cada tópico para enviar ao Groq de uma vez
+    clusters_contexto = []
     for topic_idx, topic in enumerate(nmf_model.components_):
-        # Pegamos as 12 palavras mais fortes do cluster para dar contexto à IA
-        top_features_ind = topic.argsort()[:-13:-1] 
-        top_words = [feature_names[i] for i in top_features_ind]
+        top_indices = topic.argsort()[:-10:-1]
+        cluster_words = [feature_names[i] for i in top_indices]
+        clusters_contexto.append(f"Tópico {topic_idx+1}: {', '.join(cluster_words)}")
+
+    contexto_prompt = "\n".join(clusters_contexto)
+
+    # 3. O Super-Prompt (Visão Ecologia do Conhecimento)
+    prompt_sistema = """Você é um classificador de temas de teses e dissertações de programas de pós-graduação. 
+Sua tarefa é ler grupos de palavras-chave e dar um nome apropriado acadêmico para cada área.
+Evite nomes genéricos como 'Estudo de X' ou 'Aplicações de Y'. 
+Busque títulos que sejam objetivos e integrem aqueles termos"""
+
+    prompt_usuario = f"""Abaixo estão {num_topicos} grupos de palavras-chave extraídas de teses. 
+Crie um título curto (3 a 5 palavras) para cada um. 
+
+REGRAS ESTRITAS:
+1. Retorne APENAS uma lista numerada.
+2. Não use a palavra 'Correlatas' ou 'Aplicações'.
+
+GRUPOS:
+{contexto_prompt}"""
+
+    try:
+        completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": prompt_usuario}
+            ],
+            model="llama-3.1-70b-versatile", # Modelo mais robusto que o 8b
+            temperature=0.7, # Aumentamos para dar mais "vida" aos nomes
+        )
         
-        # O "Cérebro" do LLM
-        prompt = f"""Você é um classificador acadêmico sênior com visão transdisciplinar. 
-Analise este conjunto de palavras-chave extraídas de teses universitárias que pertencem ao mesmo cluster de pesquisa:
-{', '.join(top_words)}.
+        # Parseando a lista numerada que o LLM devolve
+        respostas = completion.choices[0].message.content.strip().split('\n')
+        # Limpa números e pontos (ex: "1. Termodinâmica" -> "Termodinâmica")
+        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip() for r in respostas if r.strip()]
+        
+        # Garante que temos nomes para todos os tópicos (preenchimento se a IA pular algum)
+        while len(nomes_finais) < num_topicos:
+            nomes_finais.append("Fronteiras Multidisciplinares")
 
-Crie um nome de Macrotema curto, formal, elegante e claro (máximo de 3 a 5 palavras) em Português que resuma e intitule essa área de pesquisa.
-RETORNE APENAS O NOME DO MACROTEMA. Sem aspas, sem pontos finais, sem explicações. Apenas o título."""
+    except Exception as e:
+        st.error(f"Erro na API Groq: {e}")
+        nomes_finais = [f"Área de {c.split(':')[1].split(',')[0].title()}" for c in clusters_contexto]
 
-        try:
-            chat_completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-8b-8192", # Modelo rápido e excelente para tarefas curtas
-                temperature=0.3, # Baixa temperatura = maior precisão acadêmica
-                max_tokens=25
-            )
-            nome_macrotema = chat_completion.choices[0].message.content.strip().strip('"').strip("'")
-        except Exception as e:
-            # Plano B caso a API falhe (timeout, limite de uso, etc)
-            nome_macrotema = f"{top_words[0].title()} e Aplicações Correlatas"
-            
-        nomes_topicos.append(nome_macrotema)
-
-    # 3. Devolver os rótulos aos documentos
+    # 4. Atribuição
     for i, doc in enumerate(dados):
-        topico_vencedor_idx = nmf_matrix[i].argmax()
-        if nmf_matrix[i][topico_vencedor_idx] > 0.01:
-            doc['macrotema'] = nomes_topicos[topico_vencedor_idx]
-        else:
-            doc['macrotema'] = "Pesquisa Interdisciplinar Dispersa"
+        idx = nmf_matrix[i].argmax()
+        doc['macrotema'] = nomes_finais[idx] if idx < len(nomes_finais) else "Intersecções do Conhecimento"
 
     return dados
-
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
 @st.cache_data
 def carregar_catalogo_programas():

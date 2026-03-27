@@ -485,22 +485,40 @@ if 'dados_completos' not in st.session_state:
         colecoes_disponiveis = obter_programas_ufsc()
     
     if colecoes_disponiveis:
+        st.markdown("### Selecione os Programas para Analisar")
+        
+        # 1. A SELEÇÃO AGORA FICA FORA DO FORMULÁRIO (Para atualizar em tempo real)
+        programas_selecionados = st.multiselect("Pode selecionar múltiplos Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
+        
+        # 2. EXIBIÇÃO DINÂMICA DE INFORMAÇÕES
+        if programas_selecionados:
+            st.markdown("#### ℹ️ Informações das Coleções Selecionadas")
+            for prog in programas_selecionados:
+                set_spec = colecoes_disponiveis[prog]
+                
+                # Engenharia reversa para criar o link do repositório
+                # O setSpec no DSpace é formato 'col_123456789_74645' e o URL é '123456789/74645'
+                partes_id = set_spec.replace('col_', '').split('_')
+                if len(partes_id) >= 2:
+                    url_repositorio = f"https://repositorio.ufsc.br/handle/{partes_id[0]}/{partes_id[1]}"
+                else:
+                    url_repositorio = "https://repositorio.ufsc.br/"
+                
+                # Cria um card de informação elegante
+                st.info(f"**{prog}**\n\n🔗 [Aceder à página original na UFSC]({url_repositorio}) | 🪪 ID Interno OAI: `{set_spec}`")
+        
+        # 3. O FORMULÁRIO AGORA CONTROLA APENAS O BOTÃO DE EXTRAÇÃO
         with st.form("form_extracao"):
-            st.markdown("### Selecione os Programas para Analisar")
-            # --- NOVO: st.multiselect para seleção múltipla ---
-            programas_selecionados = st.multiselect("Pode selecionar múltiplos Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
-            
-            st.info("⚠️ A extração ao vivo agrupa todos os programas. Selecionar muitos programas exigirá mais tempo de download.")
+            st.warning("⚠️ A extração ao vivo agrupa todos os programas. Selecionar muitos programas exigirá mais tempo de download.")
             btn_extrair = st.form_submit_button("Iniciar Extração ao Vivo", type="primary")
             
         status_box = st.empty()
         
         if btn_extrair:
             if not programas_selecionados:
-                status_box.warning("Selecione pelo menos um programa para continuar.")
+                status_box.error("Selecione pelo menos um programa para continuar.")
             else:
                 dados_agregados = []
-                # --- NOVO: Loop de extração para múltiplos programas ---
                 for prog in programas_selecionados:
                     status_box.info(f"🚀 Iniciando conexão com: {prog}...")
                     set_spec_alvo = colecoes_disponiveis[prog]
@@ -511,7 +529,6 @@ if 'dados_completos' not in st.session_state:
                     status_box.success(f"✅ Extração Global concluída! {len(dados_agregados)} documentos combinados.")
                     st.session_state['dados_completos'] = dados_agregados
                     
-                    # Nomeia o dashboard dependendo da quantidade de PPGs
                     if len(programas_selecionados) == 1:
                         st.session_state['nome_programa'] = programas_selecionados[0]
                     else:

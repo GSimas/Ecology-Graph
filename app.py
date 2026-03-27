@@ -115,18 +115,17 @@ def identificar_nivel(tipos, titulo=""):
     if 'master' in tipos_str or 'disserta' in tipos_str or 'disserta' in titulo_lower: return 'Dissertação (Mestrado)'
     return 'Outros'
 
-from sickle.oaiexceptions import NoRecordsMatch
-
-from sickle.oaiexceptions import NoRecordsMatch
-
 def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
-    sickle = Sickle('https://repositorio.ufsc.br/oai/request', timeout=60)
-    try: records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
+    # Aumentamos o timeout para 120s para dar tempo à UFSC de processar as "páginas" de resultados
+    sickle = Sickle('https://repositorio.ufsc.br/oai/request', timeout=120)
+    
+    try: 
+        records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
     except NoRecordsMatch:
         status_placeholder.error(f"⚠️ O programa {nome_prog} está vazio ou fora do padrão.")
         return []
     except Exception as e:
-        status_placeholder.error(f"⚠️ Erro de comunicação: {e}")
+        status_placeholder.error(f"⚠️ Erro de comunicação inicial: {e}")
         return []
 
     dados_extraidos = []
@@ -135,17 +134,31 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
     i = 0
     
     while True:
+        # --- NÍVEL 1 DE PROTEÇÃO: REDE E PAGINAÇÃO ---
         try:
             record = next(iterator)
+        except StopIteration:
+            break # Fim natural: todos os documentos foram baixados
+        except Exception as e:
+            st.warning(f"⚠️ O servidor da UFSC interrompeu a ligação após {i} documentos do {nome_prog}. A guardar os dados já extraídos...")
+            break # Se a rede cair, salva o que já tem e para a extração
+            
+        # --- NÍVEL 2 DE PROTEÇÃO: DOCUMENTO ISOLADO ---
+        try:
             i += 1
             if i % 50 == 0:
                 status_placeholder.info(f"⏳ [{nome_prog}] A extrair documentos... Já processados: **{i}**")
 
-            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: continue
+            # Ignora documentos deletados ou sem metadados válidos
+            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: 
+                continue
                 
             meta = record.metadata
             titulo = meta.get('title', [''])[0].strip()
-            if not titulo or titulo in titulos_vistos: continue
+            
+            # Filtro de duplicados
+            if not titulo or titulo in titulos_vistos: 
+                continue
             titulos_vistos.add(titulo)
             
             autores = [normalizar_nome(a) for a in meta.get('creator', []) if a.strip()]
@@ -157,9 +170,7 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
             co_orientadores = contrib[1:] if len(contrib) > 1 else []
             pks = list(set([normalizar_palavra_chave(pk) for pk in meta.get('subject', []) if pk]))
             
-            # --- NOVO: EXTRAÇÃO DO RESUMO ---
             descricoes = meta.get('description', [])
-            # Assume que o resumo é o texto mais longo, ignorando notas curtas
             resumo = max(descricoes, key=len) if descricoes else ""
             
             dados_extraidos.append({
@@ -168,10 +179,11 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
                 'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 
                 'ano': ano_real, 'resumo': resumo, 'programa_origem': nome_prog
             })
-        except StopIteration: break 
-        except Exception as e:
-            st.warning(f"⚠️ Interrupção no documento {i} do {nome_prog}. Salvando dados capturados...")
-            break 
+            
+        except Exception:
+            # SE UM DOCUMENTO ESPECÍFICO DER ERRO (ex: XML corrompido), 
+            # IGNORA-O E PASSA AO PRÓXIMO EM VEZ DE PARAR TUDO!
+            continue
 
     return dados_extraidos
 

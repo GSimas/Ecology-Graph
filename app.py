@@ -122,8 +122,8 @@ def calcular_sna_global(dados):
     return {node: {'Grau Absoluto': grau_abs.get(node, 0), 'Degree Centrality': deg_cent.get(node, 0), 'Betweenness': bet_cent.get(node, 0), 'Comunidade': mapa_comunidades.get(node, 'N/A'), 'Ranking Global': rank_bet.get(node, 'N/A')} for node in G.nodes()}
 
 @st.cache_resource
-def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1):
-    """Constrói os objetos Node e Edge para o visualizador avançado do streamlit-agraph."""
+def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_tamanho="Tamanho Fixo", _sna_global=None):
+    """Constrói os objetos para o agraph com suporte a dimensionamento SNA dinâmico."""
     G = nx.Graph()
     for tese in dados_recorte:
         doc_id = tese['titulo']
@@ -135,36 +135,43 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1):
 
     if termo_foco not in G.nodes(): return [], []
     
-    # Recorta a órbita do nó
     ego_G = nx.ego_graph(G, termo_foco, radius=grau_separacao)
-    graus = dict(ego_G.degree())
+    graus_locais = dict(ego_G.degree())
+    
+    # Preparação para normalização de tamanhos SNA
+    if _sna_global and metodo_tamanho != "Tamanho Fixo":
+        max_metrica = max([_sna_global.get(n, {}).get(metodo_tamanho, 1) for n in ego_G.nodes()])
+        if max_metrica == 0: max_metrica = 1
 
-    nodes = []
-    edges = []
+    nodes, edges = [], []
 
-    # 1. Construir os Nós (Nodes)
     for node, attrs in ego_G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
         
-        # Lógica de Tamanho e Cor
-        tam = 40 if node == termo_foco else 15 + (graus[node] * 1.5)
+        # LÓGICA DE TAMANHO DINÂMICO
+        if node == termo_foco:
+            tam = 45 # O Sol (centro) é sempre o maior
+        else:
+            if metodo_tamanho == "Tamanho Fixo":
+                tam = 15 + (graus_locais[node] * 1.5)
+            elif _sna_global:
+                valor_metrica = _sna_global.get(node, {}).get(metodo_tamanho, 0)
+                tam = 10 + (valor_metrica / max_metrica) * 30
+            else:
+                tam = 15
+                
         cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Conceito' else '#95A5A6')
-        
-        # Tooltip (Hover)
-        hover = f"Tipo: {tipo}\nConexões locais: {graus[node]}"
-        if tipo == 'Documento': hover += f"\nAno: {attrs.get('ano')}\nNível: {attrs.get('nivel')}"
-        
-        # Formas Geométricas (Agraph suporta dot, star, triangle, square, diamond, etc.)
         formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot')
         
-        # Rótulo inteligente (encurta títulos de teses muito longos para não poluir o visual)
+        hover = f"Tipo: {tipo}\nGrau Local: {graus_locais[node]}"
+        if _sna_global and node in _sna_global:
+            hover += f"\nBetweenness Global: {_sna_global[node].get('Betweenness', 0):.4f}"
+        
         rotulo = node[:25] + "..." if len(node) > 25 and tipo == 'Documento' else node
-
         nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, title=f"{node}\n{hover}", shape=formato))
 
-    # 2. Construir as Arestas (Edges)
     for u, v in ego_G.edges():
-        edges.append(Edge(source=u, target=v, color="#7F8C8D", width=1.5))
+        edges.append(Edge(source=u, target=v, color="#7F8C8D", width=1.0))
 
     return nodes, edges
 
@@ -293,30 +300,20 @@ if termo_ativo:
             st.metric("Betweenness", f"{metricas.get('Betweenness', 0):.4f}")
 
     st.markdown("### 🌌 Órbita de Relacionamentos")
-    grau_expansao = st.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
+    
+    col_orb1, col_orb2 = st.columns(2)
+    grau_expansao = col_orb1.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
+    metodo_tamanho_ego = col_orb2.selectbox("Tamanho dos Nós na Órbita:", ["Tamanho Fixo", "Grau Absoluto", "Degree Centrality", "Betweenness"])
     
     with st.spinner("A mapear o ecossistema local em 3D/2D..."):
-        nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao)
+        # Passamos as métricas globais para a função
+        nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao, metodo_tamanho_ego, sna_global)
         
         if nodes and edges:
-            # Configuração da física e do visual do motor Agraph
-            config = Config(
-                width="100%",
-                height=600,
-                directed=False, 
-                physics=True, 
-                hierarchical=False,
-                nodeHighlightBehavior=True, # Faz brilhar os vizinhos ao passar o rato
-                highlightColor="#F1C40F", # Amarelo vibrante no hover
-                collapsible=False
-            )
-            
-            # Renderiza o grafo nativo!
+            config = Config(width="100%", height=600, directed=False, physics=True, hierarchical=False, nodeHighlightBehavior=True, highlightColor="#F1C40F", collapsible=False)
             retorno_clique = agraph(nodes=nodes, edges=edges, config=config)
             
-            # Se o utilizador clicar num nó dentro do grafo, o Streamlit deteta o ID do nó clicado!
             if retorno_clique and retorno_clique != termo_ativo:
-                st.info(f"💡 Você clicou no nó: **{retorno_clique}**. Pesquise por este nome na caixa acima para ver os detalhes completos!")
-                
+                st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
         else:
             st.warning("Não foi possível gerar a órbita visual para este termo.")

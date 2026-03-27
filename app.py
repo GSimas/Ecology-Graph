@@ -5,6 +5,7 @@ import networkx.algorithms.community as nx_comm
 from pyvis.network import Network
 import pandas as pd
 import json
+import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -14,12 +15,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização customizada (CSS)
+# Estilização customizada (CSS) - Inclui o botão verde para ações primárias
 st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
     h1, h2, h3 { color: #F39C12; font-family: 'Helvetica Neue', sans-serif; }
     .stMetric { background-color: #2C3E50; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 10px rgba(0,0,0,0.5); }
+    
+    /* Customização do Botão Primário (Verde) */
+    button[kind="primary"] {
+        background-color: #2ECC71 !important;
+        color: white !important;
+        border-color: #27AE60 !important;
+        font-weight: bold !important;
+    }
+    button[kind="primary"]:hover {
+        background-color: #27AE60 !important;
+        border-color: #2ECC71 !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -34,12 +47,23 @@ if 'tabela_pronta' not in st.session_state:
 def carregar_dados_locais():
     try:
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+            dados = json.load(f)
+            
+            # Rotina para classificar automaticamente o nível acadêmico pelo título
+            for t in dados:
+                titulo_lower = t.get('titulo', '').lower()
+                if 'tese' in titulo_lower:
+                    t['nivel_academico'] = 'Tese (Doutorado)'
+                elif 'disserta' in titulo_lower:
+                    t['nivel_academico'] = 'Dissertação (Mestrado)'
+                else:
+                    t['nivel_academico'] = 'Outros / Não Especificado'
+            return dados
     except FileNotFoundError:
         st.error("Arquivo base_ppgegc.json não encontrado no repositório.")
         return []
 
-@st.cache_data(show_spinner="A extrair matrizes matemáticas...")
+@st.cache_data
 def obter_dataframe_metricas(dados_recorte):
     G = nx.Graph()
     for tese in dados_recorte:
@@ -69,14 +93,20 @@ def obter_dataframe_metricas(dados_recorte):
         })
     return pd.DataFrame(lista)
 
-@st.cache_resource(show_spinner="A calcular layout visual e detetar comunidades...")
+@st.cache_resource
 def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     G = nx.Graph()
     
-    # 1. Estruturação Básica
+    # 1. Estruturação Básica e injeção de todos os metadados no nó
     for tese in dados_recorte:
         doc_id = tese['titulo']
-        G.add_node(doc_id, tipo='Documento', ano=tese['ano'])
+        G.add_node(doc_id, 
+                   tipo='Documento', 
+                   ano=tese.get('ano', 'N/A'),
+                   autores=", ".join(tese.get('autores', [])),
+                   orientador=tese.get('orientador', 'Não informado'),
+                   co_orientadores=", ".join(tese.get('co_orientadores', [])))
+        
         for autor in tese['autores']:
             G.add_node(autor, tipo='Autor')
             G.add_edge(autor, doc_id)
@@ -90,24 +120,26 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     degree_cent = nx.degree_centrality(G)
     betweenness_cent = nx.betweenness_centrality(G)
 
-    # 2. Correção dos Tooltips (Remoção do HTML e uso de \n)
+    # 2. Construção limpa dos Tooltips (sem tags HTML)
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
         
-        # Formatando o texto de forma limpa, sem tags HTML
-        janela_sna = f"\n\n--- Métricas SNA ---\nGrau: {G.degree(node)}\nDegree Centrality: {degree_cent[node]:.4f}\nBetweenness: {betweenness_cent[node]:.4f}"
+        janela_sna = f"\n\n--- MÉTRICAS SNA ---\nGrau: {G.degree(node)}\nCentralidade de Grau: {degree_cent[node]:.4f}\nIntermediação: {betweenness_cent[node]:.4f}"
         
-        # Adiciona os formatos geométricos
         if tipo == 'Documento':
-            attrs.update({'shape': 'square', 'size': 30, 'title': f"Tese:\n{node}\nAno: {attrs.get('ano')}{janela_sna}"})
+            info_doc = f"TESE / DISSERTAÇÃO:\n{node}\nAno: {attrs.get('ano')}\nAutor(es): {attrs.get('autores')}\nOrientador: {attrs.get('orientador')}"
+            if attrs.get('co_orientadores'):
+                info_doc += f"\nCo-orientador(es): {attrs.get('co_orientadores')}"
+            attrs.update({'shape': 'square', 'size': 30, 'title': info_doc + janela_sna})
+            
         elif tipo == 'Autor':
-            attrs.update({'shape': 'dot', 'size': 20, 'title': f"Autor:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'dot', 'size': 20, 'title': f"AUTOR:\n{node}{janela_sna}"})
         elif tipo == 'Orientador':
-            attrs.update({'shape': 'star', 'size': 25, 'title': f"Orientador:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'star', 'size': 25, 'title': f"ORIENTADOR:\n{node}{janela_sna}"})
         elif tipo == 'Conceito':
-            attrs.update({'shape': 'triangle', 'size': 15, 'title': f"Conceito:\n{node}{janela_sna}"})
+            attrs.update({'shape': 'triangle', 'size': 15, 'title': f"CONCEITO:\n{node}{janela_sna}"})
 
-    # 3. Lógica de Coloração (Comunidades vs Original)
+    # 3. Coloração
     if metodo_cor == "Original (Categoria)":
         for node, attrs in G.nodes(data=True):
             tipo = attrs.get('tipo', 'Desconhecido')
@@ -116,27 +148,17 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
             elif tipo == 'Orientador': attrs['color'] = '#F39C12'
             elif tipo == 'Conceito': attrs['color'] = '#2ECC71'
     else:
-        # Algoritmos de Comunidade
         comunidades = []
-        if metodo_cor == "Comunidades (Louvain)":
-            comunidades = nx_comm.louvain_communities(G)
-        elif metodo_cor == "Comunidades (Greedy Modularity)":
-            comunidades = nx_comm.greedy_modularity_communities(G)
+        if metodo_cor == "Comunidades (Louvain)": comunidades = nx_comm.louvain_communities(G)
+        elif metodo_cor == "Comunidades (Greedy Modularity)": comunidades = nx_comm.greedy_modularity_communities(G)
         elif metodo_cor == "Comunidades (Girvan-Newman)":
-            try:
-                # Pega a primeira divisão iterativa para evitar travamentos
-                gerador_gn = nx_comm.girvan_newman(G)
-                comunidades = next(gerador_gn)
-            except StopIteration:
-                comunidades = [set(G.nodes())]
+            try: comunidades = next(nx_comm.girvan_newman(G))
+            except StopIteration: comunidades = [set(G.nodes())]
 
-        # Paleta de cores vibrantes para identificar as diferentes bolhas/comunidades
         paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080']
-        
         for i, comm in enumerate(comunidades):
             cor_comunidade = paleta[i % len(paleta)]
-            for node in comm:
-                G.nodes[node]['color'] = cor_comunidade
+            for node in comm: G.nodes[node]['color'] = cor_comunidade
 
     # 4. Configuração Pyvis
     net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
@@ -146,7 +168,7 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     path = "grafo_temp.html"
     net.save_graph(path)
     
-    # 5. Injeção JavaScript para ocultar nós ao clicar
+    # 5. Script Ocultar Nós
     script_ocultar = """
     network.on("selectNode", function (params) {
         if (params.nodes.length === 1) {
@@ -160,10 +182,8 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
         nodes.update(nodes.get().map(n => ({id: n.id, hidden: false})));
     });
     """
-    with open(path, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(html_content.replace('return network;', script_ocultar + '\n\treturn network;'))
+    with open(path, 'r', encoding='utf-8') as f: html_content = f.read()
+    with open(path, 'w', encoding='utf-8') as f: f.write(html_content.replace('return network;', script_ocultar + '\n\treturn network;'))
         
     return path, G.number_of_nodes(), G.number_of_edges()
 
@@ -179,13 +199,30 @@ st.markdown("---")
 dados_completos = carregar_dados_locais()
 total_documentos = len(dados_completos) if len(dados_completos) > 0 else 100
 
+# Filtro Global de Nível Acadêmico (Afeta o Grafo e a Tabela)
+st.sidebar.header("🎯 Filtro Global de Dados")
+niveis_disponiveis = ["Tese (Doutorado)", "Dissertação (Mestrado)", "Outros / Não Especificado"]
+niveis_selecionados = st.sidebar.multiselect(
+    "Filtrar Base de Dados por Nível:",
+    options=niveis_disponiveis,
+    default=["Tese (Doutorado)", "Dissertação (Mestrado)"]
+)
+
+# Aplica o filtro global na base antes de distribuir para as ferramentas
+dados_filtrados_globalmente = [d for d in dados_completos if d.get('nivel_academico') in niveis_selecionados]
+total_filtrado = len(dados_filtrados_globalmente)
+
+if total_filtrado == 0:
+    st.warning("Nenhum documento encontrado com os filtros selecionados. Por favor, ajuste os níveis acadêmicos na barra lateral.")
+    st.stop()
+
 # --- SEÇÃO 1: GRAFO INTERATIVO ---
 st.header("🕸️ Topologia e Grafo Interativo")
 
 with st.form("form_grafo"):
     col_g1, col_g2, col_g3 = st.columns([2, 2, 1])
     with col_g1:
-        n_registros_grafo = st.slider("Documentos para a Rede Visual:", 5, total_documentos, 40, 5)
+        n_registros_grafo = st.slider("Volume de Documentos para a Rede Visual:", 5, total_filtrado, min(40, total_filtrado), 5)
     with col_g2:
         metodo_coloracao = st.selectbox(
             "Mapeamento de Cores da Rede:", 
@@ -196,10 +233,11 @@ with st.form("form_grafo"):
         btn_render_grafo = st.form_submit_button("Renderizar Grafo", use_container_width=True)
 
 if btn_render_grafo:
-    path, nos, arestas = gerar_html_pyvis(dados_completos[:n_registros_grafo], metodo_cor=metodo_coloracao)
-    st.session_state['path_grafo'] = path
-    st.session_state['kpis_grafo'] = {'nos': nos, 'arestas': arestas}
-    st.session_state['grafo_pronto'] = True
+    with st.spinner("A construir a rede topológica visual..."):
+        path, nos, arestas = gerar_html_pyvis(dados_filtrados_globalmente[:n_registros_grafo], metodo_cor=metodo_coloracao)
+        st.session_state['path_grafo'] = path
+        st.session_state['kpis_grafo'] = {'nos': nos, 'arestas': arestas}
+        st.session_state['grafo_pronto'] = True
 
 if st.session_state['grafo_pronto']:
     kpis = st.session_state['kpis_grafo']
@@ -218,13 +256,13 @@ st.markdown("---")
 st.header("🏆 Análise Estrutural e Rankings (SNA)")
 
 with st.form("form_tabela"):
-    st.write("Configurações do Ranking (Independente do Grafo Visual):")
+    st.write("Configurações do Ranking Matemático:")
     
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
-        n_registros_tabela = st.slider("Documentos analisados matematicamente:", 5, total_documentos, total_documentos, 5)
+        n_registros_tabela = st.slider("Documentos analisados matematicamente:", 5, total_filtrado, total_filtrado, 5)
     with col_t2:
-        top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=1000, value=20, step=5)
+        top_x = st.number_input("Tamanho do Ranking (Top X):", min_value=1, max_value=5000, value=20, step=5)
 
     col_t3, col_t4, col_t5 = st.columns(3)
     categorias_disponiveis = ["Documento", "Autor", "Orientador", "Conceito"]
@@ -245,8 +283,14 @@ if btn_render_tabela:
     elif not cat_sel:
         st.warning("Selecione pelo menos uma categoria.")
     else:
-        df_completo = obter_dataframe_metricas(dados_completos[:n_registros_tabela])
+        # Barra de progresso interativa
+        barra_progresso = st.progress(0, text="Iniciando a extração dos dados...")
+        time.sleep(0.3) # Breve pausa para o olho humano acompanhar a transição
         
+        barra_progresso.progress(40, text="Construindo a topologia matemática da rede...")
+        df_completo = obter_dataframe_metricas(dados_filtrados_globalmente[:n_registros_tabela])
+        
+        barra_progresso.progress(80, text="Calculando centralidades e ordenando o ranking...")
         df_filtrado = df_completo[df_completo['Categoria'].isin(cat_sel)]
         df_top_x = df_filtrado.sort_values(by=met_ord, ascending=False).head(top_x)
         
@@ -254,6 +298,10 @@ if btn_render_tabela:
         st.session_state['colunas_finais'] = ['Entidade (Nó)', 'Categoria'] + met_sel
         st.session_state['met_ord'] = met_ord
         st.session_state['tabela_pronta'] = True
+        
+        barra_progresso.progress(100, text="Análise estrutural finalizada!")
+        time.sleep(0.5)
+        barra_progresso.empty() # Remove a barra de progresso após finalizar
 
 if st.session_state['tabela_pronta']:
     df_exibicao = st.session_state['df_top_x'].copy()

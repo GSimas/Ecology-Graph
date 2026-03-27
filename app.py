@@ -117,40 +117,31 @@ def identificar_nivel(tipos, titulo=""):
 
 from sickle.oaiexceptions import NoRecordsMatch
 
-def realizar_extracao(set_spec, status_placeholder):
-    """Realiza a extração massiva com proteção contra timeouts e quebras de paginação."""
-    # Adicionamos um timeout longo (60s) para dar tempo ao servidor da UFSC de responder
+from sickle.oaiexceptions import NoRecordsMatch
+
+def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
     sickle = Sickle('https://repositorio.ufsc.br/oai/request', timeout=60)
-    
-    try: 
-        records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
+    try: records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
     except NoRecordsMatch:
-        status_placeholder.error("⚠️ Esta coleção existe no catálogo da UFSC, mas está vazia ou os documentos não estão no formato padrão.")
+        status_placeholder.error(f"⚠️ O programa {nome_prog} está vazio ou fora do padrão.")
         return []
     except Exception as e:
-        status_placeholder.error(f"⚠️ Erro de comunicação com o servidor da UFSC: {e}")
+        status_placeholder.error(f"⚠️ Erro de comunicação: {e}")
         return []
 
     dados_extraidos = []
     titulos_vistos = set()
-    
-    # Iterador manual: Protege a aplicação caso a página 2 ou 3 do servidor falhe
     iterator = iter(records)
     i = 0
     
     while True:
         try:
-            # Tenta puxar o próximo documento (ou a próxima página do servidor)
             record = next(iterator)
             i += 1
-            
-            # Feedback visual para o utilizador não achar que travou
             if i % 50 == 0:
-                status_placeholder.info(f"⏳ A fazer o download pacotes do servidor... Documentos processados: **{i}**")
+                status_placeholder.info(f"⏳ [{nome_prog}] A extrair documentos... Já processados: **{i}**")
 
-            # Proteção contra registos deletados ou sem metadados
-            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: 
-                continue
+            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: continue
                 
             meta = record.metadata
             titulo = meta.get('title', [''])[0].strip()
@@ -164,28 +155,24 @@ def realizar_extracao(set_spec, status_placeholder):
             contrib = [normalizar_nome(c) for c in meta.get('contributor', []) if "universidade" not in c.lower() and "ufsc" not in c.lower()]
             orientador = contrib[0] if len(contrib) > 0 else None
             co_orientadores = contrib[1:] if len(contrib) > 1 else []
-            
             pks = list(set([normalizar_palavra_chave(pk) for pk in meta.get('subject', []) if pk]))
+            
+            # --- NOVO: EXTRAÇÃO DO RESUMO ---
+            descricoes = meta.get('description', [])
+            # Assume que o resumo é o texto mais longo, ignorando notas curtas
+            resumo = max(descricoes, key=len) if descricoes else ""
             
             dados_extraidos.append({
                 'titulo': titulo, 'nivel_academico': nivel, 'autores': autores,
                 'orientador': orientador, 'co_orientadores': co_orientadores,
-                'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 'ano': ano_real
+                'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 
+                'ano': ano_real, 'resumo': resumo, 'programa_origem': nome_prog
             })
-            
-        except StopIteration:
-            # O servidor informou que não há mais documentos (Fim normal)
-            break 
+        except StopIteration: break 
         except Exception as e:
-            # O servidor travou a meio da extração (Erro de Paginação ou XML corrompido)
-            st.warning(f"⚠️ A extração foi interrompida antecipadamente pelo servidor da UFSC após o documento {i}. O sistema salvou o que conseguiu capturar com sucesso.")
+            st.warning(f"⚠️ Interrupção no documento {i} do {nome_prog}. Salvando dados capturados...")
             break 
 
-    if dados_extraidos:
-        status_placeholder.success(f"✅ Extração finalizada! {len(dados_extraidos)} documentos válidos capturados.")
-    else:
-        status_placeholder.error("⚠️ Nenhum documento válido foi extraído.")
-        
     return dados_extraidos
 
 # (MANTENHA AS FUNÇÕES `obter_dataframe_metricas`, `preparar_dados_base_df`, `preparar_csv_exportacao`, `gerar_html_pyvis`, `gerar_html_coocorrencia` etc. EXATAMENTE COMO ESTÃO)
@@ -363,17 +350,26 @@ def gerar_html_coocorrencia(dados_recorte, min_coocorrencia=1):
     return path, G.number_of_nodes(), G.number_of_edges()
 
 def obter_frequencias_texto(df_hist, fonte_nuvem):
-    if fonte_nuvem == "Títulos dos Documentos":
-        texto = " ".join(df_hist['titulo'].dropna().astype(str).tolist()).lower()
-        texto = re.sub(r'[^\w\s]', '', texto)
-        palavras = texto.split()
-        stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia'])
-        palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
-        return dict(Counter(palavras_limpas).most_common(100))
-    else:
+    if fonte_nuvem == "Conceitos (Palavras-chave)":
         lista_c = []
         for lst in df_hist['palavras_chave']: lista_c.extend(lst)
         return dict(Counter(lista_c).most_common(100))
+    else:
+        # Define se vai ler Títulos ou Resumos
+        if fonte_nuvem == "Resumos (Abstracts)":
+            textos = df_hist.get('resumo', pd.Series()).dropna().astype(str).tolist()
+        else:
+            textos = df_hist['titulo'].dropna().astype(str).tolist()
+            
+        texto_completo = " ".join(textos).lower()
+        texto_completo = re.sub(r'[^\w\s]', '', texto_completo)
+        palavras = texto_completo.split()
+        
+        # Stopwords expandidas para limpar a linguagem processual de abstracts
+        stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta'])
+        
+        palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
+        return dict(Counter(palavras_limpas).most_common(100))
 
 def renderizar_nuvem_interativa_html(word_freq_dict):
     data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
@@ -430,24 +426,41 @@ if 'dados_completos' not in st.session_state:
     
     if colecoes_disponiveis:
         with st.form("form_extracao"):
-            st.markdown("### Selecione o Programa para Analisar")
-            programa_selecionado = st.selectbox("Lista de Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
-            st.info("⚠️ A extração ao vivo pode demorar alguns minutos. Não feche a janela.")
+            st.markdown("### Selecione os Programas para Analisar")
+            # --- NOVO: st.multiselect para seleção múltipla ---
+            programas_selecionados = st.multiselect("Pode selecionar múltiplos Programas de Pós-Graduação (PPGs):", list(colecoes_disponiveis.keys()))
+            
+            st.info("⚠️ A extração ao vivo agrupa todos os programas. Selecionar muitos programas exigirá mais tempo de download.")
             btn_extrair = st.form_submit_button("Iniciar Extração ao Vivo", type="primary")
             
         status_box = st.empty()
         
         if btn_extrair:
-            set_spec_alvo = colecoes_disponiveis[programa_selecionado]
-            dados = realizar_extracao(set_spec_alvo, status_box)
-            
-            if dados:
-                st.session_state['dados_completos'] = dados
-                st.session_state['nome_programa'] = programa_selecionado
-                st.rerun() # Recarrega para mostrar o Dashboard
+            if not programas_selecionados:
+                status_box.warning("Selecione pelo menos um programa para continuar.")
+            else:
+                dados_agregados = []
+                # --- NOVO: Loop de extração para múltiplos programas ---
+                for prog in programas_selecionados:
+                    status_box.info(f"🚀 Iniciando conexão com: {prog}...")
+                    set_spec_alvo = colecoes_disponiveis[prog]
+                    dados = realizar_extracao(set_spec_alvo, status_box, nome_prog=prog)
+                    dados_agregados.extend(dados)
+                
+                if dados_agregados:
+                    status_box.success(f"✅ Extração Global concluída! {len(dados_agregados)} documentos combinados.")
+                    st.session_state['dados_completos'] = dados_agregados
+                    
+                    # Nomeia o dashboard dependendo da quantidade de PPGs
+                    if len(programas_selecionados) == 1:
+                        st.session_state['nome_programa'] = programas_selecionados[0]
+                    else:
+                        st.session_state['nome_programa'] = f"Análise Multidisciplinar ({len(programas_selecionados)} Programas)"
+                        
+                    st.rerun() 
     else:
         st.error("Não foi possível aceder à lista da UFSC neste momento.")
-    st.stop() # Para a execução aqui se ainda não houver dados extraídos
+    st.stop()
 
 
 # --- O DASHBOARD (SÓ APARECE APÓS A EXTRAÇÃO) ---
@@ -706,7 +719,7 @@ with st.form("form_nuvem"):
     with col_n_filt3:
         anos_sel_nuvem = st.slider("Intervalo de Anos:", min_ano_global, max_ano_global, (min_ano_global, max_ano_global), 1, key="ano_nuvem")
 
-    fonte_nuvem = st.radio("Base de texto:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
+    fonte_nuvem = st.radio("Base de texto:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos", "Resumos (Abstracts)"], horizontal=True)
     btn_render_nuvem = st.form_submit_button("Gerar Nuvem de Palavras", type="primary")
 
 if btn_render_nuvem and not df_geral_base.empty:

@@ -22,6 +22,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- INICIALIZAÇÃO DE ESTADO (SESSION STATE) ---
+# Necessário para manter o grafo visível ao clicar em outros botões
+if 'grafo_renderizado' not in st.session_state:
+    st.session_state['grafo_renderizado'] = False
+if 'tabela_renderizada' not in st.session_state:
+    st.session_state['tabela_renderizada'] = False
+
 # --- FUNÇÕES DE BACK-END ---
 @st.cache_data
 def carregar_dados_locais():
@@ -33,10 +40,12 @@ def carregar_dados_locais():
         return []
 
 @st.cache_resource(show_spinner="A processar a topologia e a calcular métricas SNA...")
-def gerar_grafo_e_metricas(dados):
+def gerar_grafo_e_metricas(dados, n_registros):
+    # Recorta os dados logo no início para poupar processamento
+    dados_filtrados = dados[:n_registros]
     G = nx.Graph()
     
-    for tese in dados:
+    for tese in dados_filtrados:
         doc_id = tese['titulo']
         G.add_node(doc_id, tipo='Documento', ano=tese['ano'])
         
@@ -59,7 +68,6 @@ def gerar_grafo_e_metricas(dados):
 
     for node, attrs in G.nodes(data=True):
         tipo = attrs.get('tipo', 'Desconhecido')
-        
         conexoes = G.degree(node)
         deg_c = degree_cent[node]
         bet_c = betweenness_cent[node]
@@ -73,8 +81,7 @@ def gerar_grafo_e_metricas(dados):
         })
         
         janela_sna = f"""
-        <hr>
-        <b>📊 Métricas SNA:</b><br>
+        <hr><b>📊 Métricas SNA:</b><br>
         Grau Absoluto: {conexoes}<br>
         Degree Centrality: {deg_c:.4f}<br>
         Betweenness: {bet_c:.4f}
@@ -112,17 +119,14 @@ def gerar_grafo_e_metricas(dados):
           "barnesHut": {"gravitationalConstant": -15000, "springLength": 150},
           "stabilization": {"enabled": true, "iterations": 150}
       },
-      "interaction": {
-          "hover": true, 
-          "navigationButtons": true,
-          "tooltipDelay": 100
-      }
+      "interaction": { "hover": true, "navigationButtons": true, "tooltipDelay": 100 }
     }
     """)
     
     path = "grafo_temp.html"
     net.save_graph(path)
     
+    # Injeção de JavaScript para ocultar nós ao clicar
     script_ocultar_nos = """
     network.on("selectNode", function (params) {
         if (params.nodes.length === 1) {
@@ -130,19 +134,13 @@ def gerar_grafo_e_metricas(dados):
             var connectedNodes = network.getConnectedNodes(nodeId);
             var allNodes = nodes.get();
             var updates = [];
-            
             for (var i = 0; i < allNodes.length; i++) {
                 var nId = allNodes[i].id;
-                if (nId === nodeId || connectedNodes.includes(nId)) {
-                    updates.push({id: nId, hidden: false});
-                } else {
-                    updates.push({id: nId, hidden: true});
-                }
+                updates.push({id: nId, hidden: !(nId === nodeId || connectedNodes.includes(nId))});
             }
             nodes.update(updates);
         }
     });
-
     network.on("deselectNode", function (params) {
         var allNodes = nodes.get();
         var updates = [];
@@ -152,12 +150,9 @@ def gerar_grafo_e_metricas(dados):
         nodes.update(updates);
     });
     """
-    
     with open(path, 'r', encoding='utf-8') as f:
         html_content = f.read()
-    
     html_content = html_content.replace('return network;', script_ocultar_nos + '\n\treturn network;')
-    
     with open(path, 'w', encoding='utf-8') as f:
         f.write(html_content)
         
@@ -166,104 +161,113 @@ def gerar_grafo_e_metricas(dados):
 # --- CONSTRUÇÃO DA INTERFACE FRONT-END ---
 
 st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
-st.markdown("*Navegue pelos saberes: Passe o rato para ver métricas. Clique num nó para isolar o seu ecossistema.*")
+
+# TEXTO EXPLICATIVO DENSO E OBJETIVO
+st.markdown("""
+> Esta plataforma é um instrumento de Ecologia do Conhecimento aplicada à bibliometria. Ela mapeia e quantifica as intrincadas relações entre teses, autores, orientadores e conceitos do Programa de Pós-Graduação em Engenharia e Gestão do Conhecimento (PPGEGC/UFSC) através da Ciência de Redes. O seu propósito é revelar a genealogia académica, identificar *hubs* de influência e expor as pontes interdisciplinares que estruturam a produção científica do programa, traduzindo repositórios institucionais numa topologia visual navegável e em métricas rigorosas de centralidade matemática.
+""")
+st.markdown("---")
 
 dados_completos = carregar_dados_locais()
 total_documentos = len(dados_completos) if len(dados_completos) > 0 else 100
 
+# 1. CONTROLO DO GRAFO (LATERAL)
 with st.sidebar:
-    st.header("Análise Estrutural")
-    n_registros = st.slider("Documentos para desenhar na rede:", min_value=5, max_value=total_documentos, value=40, step=5)
+    st.header("1. Motor de Renderização")
+    # O uso do formulário impede a atualização automática ao mexer no slider
+    with st.form("form_grafo"):
+        n_registros = st.slider("Documentos-base da rede:", min_value=5, max_value=total_documentos, value=40, step=5)
+        btn_renderizar_grafo = st.form_submit_button("Renderizar Visualização Pyvis")
+        
+    if btn_renderizar_grafo:
+        # Quando clicado, guarda os resultados em cache e marca como renderizado
+        caminho_html, num_nos, num_arestas, df_completo = gerar_grafo_e_metricas(dados_completos, n_registros)
+        st.session_state['caminho_html'] = caminho_html
+        st.session_state['num_nos'] = num_nos
+        st.session_state['num_arestas'] = num_arestas
+        st.session_state['df_completo'] = df_completo
+        st.session_state['grafo_renderizado'] = True
+
     st.markdown("---")
-    st.info("**Instruções de Interação:**\n"
-            "1. **Hover:** Sobre qualquer nó para ver as métricas SNA.\n"
-            "2. **Clique:** Num nó para isolar a rede.\n"
-            "3. **Clique fora:** No espaço negro para restaurar.")
+    st.info("**Interação na Rede:**\n"
+            "1. **Hover:** Veja métricas no nó.\n"
+            "2. **Clique:** Isole o ecossistema.\n"
+            "3. **Clique fora:** Restaure a rede.")
 
-# Filtro Principal de Dados para a Rede Visual
-dados_filtrados = dados_completos[:n_registros]
-caminho_html, num_nos, num_arestas, df_completo = gerar_grafo_e_metricas(dados_filtrados)
+# 2. ÁREA PRINCIPAL (REDE)
+if st.session_state['grafo_renderizado']:
+    # KPIs
+    st.markdown("### 🕸️ Grafo Interativo e Topologia")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Documentos", n_registros)
+    col2.metric("Entidades (Nós)", st.session_state['num_nos'])
+    col3.metric("Conexões (Arestas)", st.session_state['num_arestas'])
+    
+    densidade = (st.session_state['num_arestas'] / st.session_state['num_nos']) if st.session_state['num_nos'] > 0 else 0
+    col4.metric("Densidade", f"{densidade:.3f}")
 
-# KPIs
-st.markdown("### 📊 Topologia da Rede Atual")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Documentos Renderizados", len(dados_filtrados))
-col2.metric("Entidades (Nós)", num_nos)
-col3.metric("Conexões (Arestas)", num_arestas)
-col4.metric("Densidade", f"{(num_arestas / num_nos):.3f}" if num_nos > 0 else "0")
-
-st.markdown("---")
-
-# Layout em duas colunas: Uma para o Grafo, outra para o Ranking e Filtros
-col_grafo, col_tabela = st.columns([2, 1])
-
-with col_grafo:
-    st.markdown("### 🕸️ Grafo Interativo")
-    with open(caminho_html, 'r', encoding='utf-8') as f:
+    # Renderização visual
+    with open(st.session_state['caminho_html'], 'r', encoding='utf-8') as f:
         components.html(f.read(), height=650, scrolling=False)
 
-with col_tabela:
-    st.markdown("### 🏆 Top 10 Hubs Analíticos")
+    st.markdown("---")
+
+    # 3. ÁREA INFERIOR (TABELA E RANKING)
+    st.markdown("### 🏆 Ranking Estrutural e Exportação")
     
-    # --- FILTROS MULTIPLOS DA TABELA ---
-    categorias_disponiveis = df_completo['Categoria'].unique().tolist()
-    categorias_selecionadas = st.multiselect(
-        "Filtre as Categorias:",
-        options=categorias_disponiveis,
-        default=categorias_disponiveis  # Por padrão, mostra todas
-    )
-    
+    df_base = st.session_state['df_completo']
+    categorias_disponiveis = df_base['Categoria'].unique().tolist()
     todas_metricas = ["Grau Absoluto", "Degree Centrality", "Betweenness"]
-    metricas_selecionadas = st.multiselect(
-        "Métricas para exibir na tabela:",
-        options=todas_metricas,
-        default=["Grau Absoluto", "Betweenness"]
-    )
-    
-    # Proteção caso o utilizador desmarque todas as métricas
-    if not metricas_selecionadas:
-        st.warning("Selecione pelo menos uma métrica para exibir.")
-        metricas_selecionadas = ["Grau Absoluto"]
+
+    # Formulário para a tabela (também impede atualização automática ao selecionar múltiplos itens)
+    with st.form("form_tabela"):
+        col_f1, col_f2, col_f3 = st.columns(3)
         
-    metrica_ordenacao = st.selectbox(
-        "Ordenar o Ranking (Top 10) por:",
-        options=metricas_selecionadas
-    )
-    
-    st.markdown("<br>", unsafe_allow_html=True) # Espaçamento
-    
-    # --- PROCESSAMENTO DO PANDAS (FILTROS) ---
-    # 1. Filtra pelas categorias escolhidas
-    df_filtrado = df_completo[df_completo['Categoria'].isin(categorias_selecionadas)]
-    
-    # 2. Ordena pela métrica alvo e extrai o Top 10
-    if not df_filtrado.empty:
-        df_top10 = df_filtrado.sort_values(by=metrica_ordenacao, ascending=False).head(10)
+        with col_f1:
+            cat_sel = st.multiselect("Categorias de Nós:", options=categorias_disponiveis, default=categorias_disponiveis)
+        with col_f2:
+            met_sel = st.multiselect("Métricas na Tabela:", options=todas_metricas, default=["Grau Absoluto", "Betweenness"])
+        with col_f3:
+            # Dropdown para forçar o utilizador a escolher apenas uma regra matemática para ordenar
+            met_ord = st.selectbox("Regra Matemática de Ordenação (Top 10):", options=met_sel if met_sel else todas_metricas)
+            
+        btn_atualizar_tabela = st.form_submit_button("Atualizar Tabela")
+
+    if btn_atualizar_tabela:
+        # Guarda as opções no estado para sobrevivência da tabela
+        st.session_state['tabela_opcoes'] = {'cat': cat_sel, 'met': met_sel, 'ord': met_ord}
+        st.session_state['tabela_renderizada'] = True
+
+    # Renderização da Tabela
+    if st.session_state['tabela_renderizada']:
+        opcoes = st.session_state['tabela_opcoes']
         
-        # 3. Formatação visual (apenas para a exibição na tela)
-        df_visual = df_top10.copy()
-        if 'Degree Centrality' in df_visual.columns:
-            df_visual['Degree Centrality'] = df_visual['Degree Centrality'].apply(lambda x: f"{x:.4f}")
-        if 'Betweenness' in df_visual.columns:
-            df_visual['Betweenness'] = df_visual['Betweenness'].apply(lambda x: f"{x:.4f}")
-        
-        # Seleciona as colunas dinâmicas escolhidas pelo utilizador
-        colunas_finais = ['Entidade (Nó)', 'Categoria'] + metricas_selecionadas
-        
-        st.dataframe(
-            df_visual[colunas_finais], 
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # --- EXPORTAÇÃO CSV ---
-        # Exportamos os dados reais (df_top10) sem a conversão de texto para não atrapalhar cálculos no Excel
-        csv_data = df_top10[colunas_finais].to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Exportar Ranking (CSV)",
-            data=csv_data,
-            file_name=f"top10_{metrica_ordenacao.lower().replace(' ', '_')}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("Nenhuma entidade encontrada para as categorias selecionadas.")
+        if not opcoes['met']:
+            st.warning("Selecione pelo menos uma métrica para exibir.")
+        else:
+            df_filtrado = df_base[df_base['Categoria'].isin(opcoes['cat'])]
+            
+            if not df_filtrado.empty:
+                df_top10 = df_filtrado.sort_values(by=opcoes['ord'], ascending=False).head(10)
+                
+                # Formatação visual (cópia para não corromper o CSV com textos)
+                df_visual = df_top10.copy()
+                if 'Degree Centrality' in df_visual.columns:
+                    df_visual['Degree Centrality'] = df_visual['Degree Centrality'].apply(lambda x: f"{x:.4f}")
+                if 'Betweenness' in df_visual.columns:
+                    df_visual['Betweenness'] = df_visual['Betweenness'].apply(lambda x: f"{x:.4f}")
+                
+                colunas_finais = ['Entidade (Nó)', 'Categoria'] + opcoes['met']
+                
+                st.dataframe(df_visual[colunas_finais], use_container_width=True, hide_index=True)
+                
+                # Exportação CSV
+                csv_data = df_top10[colunas_finais].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Descarregar Ranking (CSV)",
+                    data=csv_data,
+                    file_name=f"top10_{opcoes['ord'].lower().replace(' ', '_')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhuma entidade encontrada para as categorias selecionadas.")

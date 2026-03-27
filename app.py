@@ -36,26 +36,75 @@ def navegar_para(novo_tipo, novo_termo):
 
 # --- FUNÇÕES DE LÓGICA TEMÁTICA ---
 def aplicar_macrotemas(dados):
-    # Dicionário de classificação semântica
-    palavras_chave_temas = {
-        "Ecologia do Conhecimento & Epistemologia": ["conhecimento", "saberes", "epistemologia", "filosofia", "educação", "ensino", "escola", "pedagogia"],
-        "Ciência, Tecnologia & Engenharia": ["ciência", "tecnologia", "sistema", "modelo", "dados", "engenharia", "software", "computação", "física", "matemática", "algoritmo"],
-        "Ecologia, Tempo & Meio Ambiente": ["ecologia", "tempo", "ambiental", "natureza", "sustentabilidade", "clima", "agronomia", "florestal", "energia", "espaço"],
-        "Relações Étnico-Raciais & Decolonialidade": ["negra", "antirracista", "racismo", "decolonial", "quilombola", "indígena", "África", "raça", "identidade"],
-        "Saúde & Vida": ["saúde", "paciente", "clínica", "doença", "biologia", "medicina", "enfermagem", "odontologia", "farmácia", "corpo"],
-        "Arte, Literatura & Expressão": ["arte", "literatura", "poesia", "estética", "teatro", "performance", "narrativa", "cultura"]
+    # Dicionário Refinado: Temas específicos com pesos e subáreas
+    # Adicionei termos que dialogam com sua pesquisa em Ecologia e Antirracismo
+    taxonomia = {
+        "Epistemologias & Ecologia do Conhecimento": [
+            "conhecimento", "saberes", "epistemologia", "diálogo", "complexidade", 
+            "interdisciplinar", "transdisciplinar", "educação", "ensino", "pedagogia",
+            "ciência e arte", "ecologia do conhecimento", "boaventura"
+        ],
+        "Termofluidodinâmica & Energias": [
+            "calor", "térmica", "fluido", "combustão", "refrigeração", "energia", 
+            "solar", "eólica", "escoamento", "termodinâmica", "turbina"
+        ],
+        "Materiais & Manufatura": [
+            "metalurgia", "aço", "liga", "cerâmica", "polímero", "usinagem", 
+            "fabricação", "soldagem", "microestrutura", "corrosão", "desgaste"
+        ],
+        "Vibrações, Acústica & Dinâmica": [
+            "vibração", "acústica", "ruído", "dinâmica", "controle", "automação",
+            "robótica", "mecatrônica", "sinal", "frequência"
+        ],
+        "Projeto & Mecânica dos Sólidos": [
+            "estruturas", "elementos de máquinas", "projeto", "fadiga", "tensão",
+            "deformação", "mecânica sólida", "mancal", "engrenagem"
+        ],
+        "Ecologia, Meio Ambiente & Tempo": [
+            "ecologia", "ambiental", "sustentabilidade", "clima", "natureza",
+            "tempo", "ecossistema", "resíduos", "impacto", "hídrico"
+        ],
+        "Estudos Decoloniais & Antirracismo": [
+            "negra", "antirracista", "racismo", "decolonial", "quilombola", 
+            "indígena", "identidade", "raça", "colonialidade", "consciência negra"
+        ],
+        "Saúde, Bioengenharia & Vida": [
+            "saúde", "biologia", "médico", "clínica", "biomecânica", "prótese",
+            "biomateriais", "hospitalar", "cuidado", "vida"
+        ],
+        "Arte, Performance & Poética": [
+            "arte", "literatura", "poesia", "estética", "performance", 
+            "narrativa", "cultura", "expressão", "corpo", "teatro"
+        ]
     }
     
     for doc in dados:
-        # Junta título e palavras-chave para análise
-        texto_analise = (doc.get('titulo', '') + " " + " ".join(doc.get('palavras_chave', []))).lower()
-        tema_atribuido = "Multidisciplinar / Transversal"
+        # 1. Construir o "Corpo de Análise" (Título + Keywords + Resumo)
+        # O resumo tem um peso menor (ou pode ser tratado igual, aqui usamos string única)
+        texto_analise = (
+            str(doc.get('titulo', '')) + " " + 
+            " ".join(doc.get('palavras_chave', [])) + " " + 
+            str(doc.get('resumo', ''))
+        ).lower()
         
-        for tema, palavras in palavras_chave_temas.items():
-            if any(palavra in texto_analise for palavra in palavras):
-                tema_atribuido = tema
-                break
-        doc['macrotema'] = tema_atribuido
+        # 2. Sistema de Pontuação por Tema
+        pontuacao = {tema: 0 for tema in taxonomia.keys()}
+        
+        for tema, palavras in taxonomia.items():
+            for palavra in palavras:
+                # Conta quantas vezes a palavra aparece no texto completo
+                count = texto_analise.count(palavra)
+                pontuacao[tema] += count
+        
+        # 3. Decidir o vencedor (ou Multidisciplinar se empatar em zero)
+        max_pontos = max(pontuacao.values())
+        if max_pontos > 0:
+            # Pega o tema com maior pontuação
+            tema_vencedor = max(pontuacao, key=pontuacao.get)
+            doc['macrotema'] = tema_vencedor
+        else:
+            doc['macrotema'] = "Multidisciplinar / Transversal"
+            
     return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---

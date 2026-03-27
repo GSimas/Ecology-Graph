@@ -5,9 +5,9 @@ import networkx.algorithms.community as nx_comm
 from pyvis.network import Network
 import pandas as pd
 import plotly.express as px
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
 import json
+import re
+from collections import Counter
 import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -84,13 +84,10 @@ def obter_dataframe_metricas(dados_recorte):
 
 @st.cache_data
 def preparar_dados_base_df(dados):
-    """Gera um DataFrame base limpo para os gráficos de tempo e nuvem."""
     df = pd.DataFrame(dados)
-    # Limpa e converte o Ano para numérico
     df['Ano'] = pd.to_numeric(df['ano'], errors='coerce')
     df = df.dropna(subset=['Ano'])
     df['Ano'] = df['Ano'].astype(int)
-    # Preenche vazios
     df['nivel_academico'] = df['nivel_academico'].fillna('Outros / Não Especificado')
     df['titulo'] = df['titulo'].fillna('')
     return df
@@ -166,6 +163,67 @@ def gerar_html_pyvis(dados_recorte, metodo_cor="Original (Categoria)"):
     with open(path, 'w', encoding='utf-8') as f: f.write(html_content.replace('return network;', script_ocultar + '\n\treturn network;'))
     return path, G.number_of_nodes(), G.number_of_edges()
 
+def obter_frequencias_texto(df_hist, fonte_nuvem):
+    """Processa o texto ou as palavras-chave para gerar a contagem exata da nuvem."""
+    if fonte_nuvem == "Títulos dos Documentos":
+        texto = " ".join(df_hist['titulo'].dropna().astype(str).tolist()).lower()
+        texto = re.sub(r'[^\w\s]', '', texto)
+        palavras = texto.split()
+        stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia'])
+        palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
+        return dict(Counter(palavras_limpas).most_common(100))
+    else:
+        lista_c = []
+        for lst in df_hist['palavras_chave']: lista_c.extend(lst)
+        return dict(Counter(lista_c).most_common(100))
+
+def renderizar_nuvem_interativa_html(word_freq_dict):
+    """Injeta a biblioteca ECharts para uma nuvem interativa, moderna e responsiva."""
+    data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
+    </head>
+    <body style="margin:0; padding:0; background-color:transparent;">
+        <div id="main" style="width:100%; height:450px;"></div>
+        <script>
+            var chart = echarts.init(document.getElementById('main'));
+            var option = {{
+                tooltip: {{ show: true, formatter: '<b>{{b}}</b><br/>Ocorrências: {{c}}' }},
+                series: [{{
+                    type: 'wordCloud',
+                    shape: 'circle',
+                    left: 'center', top: 'center', width: '95%', height: '95%',
+                    sizeRange: [14, 70],
+                    rotationRange: [-45, 90], rotationStep: 45,
+                    gridSize: 8,
+                    drawOutOfBound: false, layoutAnimation: true,
+                    textStyle: {{
+                        fontFamily: 'sans-serif', fontWeight: 'bold',
+                        color: function () {{
+                            // Cores claras e vibrantes apropriadas para Dark Mode
+                            return 'rgb(' + [
+                                Math.round(Math.random() * 150 + 100),
+                                Math.round(Math.random() * 150 + 100),
+                                Math.round(Math.random() * 150 + 100)
+                            ].join(',') + ')';
+                        }}
+                    }},
+                    emphasis: {{ focus: 'self', textStyle: {{ textShadowBlur: 10, textShadowColor: '#333' }} }},
+                    data: {data_js}
+                }}]
+            }};
+            chart.setOption(option);
+            window.onresize = chart.resize;
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
+
 # --- CONSTRUÇÃO DA INTERFACE FRONT-END ---
 
 st.title("🌌 Ecologia do Conhecimento: PPGEGC UFSC")
@@ -174,7 +232,6 @@ st.markdown("---")
 
 dados_completos = carregar_dados_locais()
 
-# Filtro Global
 st.sidebar.header("🎯 Filtro Global de Dados")
 niveis_disponiveis = list(set([d.get('nivel_academico', 'Não Classificado') for d in dados_completos]))
 niveis_disponiveis.sort()
@@ -187,7 +244,6 @@ if total_filtrado == 0:
     st.warning("Nenhum documento encontrado com os filtros selecionados.")
     st.stop()
 
-# Prepara DataFrame Geral
 df_geral = preparar_dados_base_df(dados_filtrados_globalmente)
 
 # --- SEÇÃO 1: GRAFO INTERATIVO ---
@@ -259,122 +315,90 @@ if st.session_state['tabela_pronta']:
 
 st.markdown("---")
 
-# --- SEÇÃO 3 & 4: DIMENSÃO HISTÓRICA E DISCURSIVA ---
-st.header("📈 Dimensão Histórica e Lexical")
-st.write("Explore a evolução das publicações ao longo do tempo e identifique os termos mais frequentes nos títulos ou palavras-chave.")
+# Prepara listas comuns para as seções 3 e 4
+min_ano = int(df_geral['Ano'].min()) if not df_geral.empty else 2000
+max_ano = int(df_geral['Ano'].max()) if not df_geral.empty else 2025
 
-if not df_geral.empty:
-    min_ano = int(df_geral['Ano'].min())
-    max_ano = int(df_geral['Ano'].max())
-    
-    # Extrai lista unificada de conceitos para os filtros
-    lista_todos_conceitos = []
-    for c_list in df_geral['palavras_chave']:
-        lista_todos_conceitos.extend(c_list)
-    conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
-    top_5_conceitos = pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist()
+lista_todos_conceitos = []
+for c_list in df_geral['palavras_chave']: lista_todos_conceitos.extend(c_list)
+conceitos_unicos = sorted(list(set(lista_todos_conceitos)))
+top_5_conceitos = pd.Series(lista_todos_conceitos).value_counts().head(5).index.tolist()
 
-    with st.form("form_historico"):
-        st.subheader("Filtros Temporais e Gráficos")
-        col_h1, col_h2 = st.columns(2)
-        with col_h1:
-            anos_sel = st.slider("Intervalo de Anos:", min_ano, max_ano, (min_ano, max_ano), 1)
-            # Agrupamento de Níveis Acadêmicos
-            agrupar_niveis = st.radio("Visão dos Níveis Acadêmicos no Gráfico:", 
-                                      ["Agrupar tudo numa única linha (Total)", "Separar Teses e Dissertações"], 
-                                      horizontal=True)
-            
-        with col_h2:
-            modo_grafico = st.radio("Modo de Análise do Gráfico Histórico:", 
-                                    ["Visão Geral (Volume de Publicações)", "Análise por Conceito (Palavras-chave)"])
-            
-            # Só mostra o multiselect se o modo for por conceito
-            if modo_grafico == "Análise por Conceito (Palavras-chave)":
-                conceitos_sel = st.multiselect("Selecione os Conceitos para comparar:", conceitos_unicos, default=top_5_conceitos)
-            else:
-                conceitos_sel = []
-
-        st.markdown("---")
-        st.subheader("Nuvem de Palavras")
-        fonte_nuvem = st.radio("Base de texto para gerar a Nuvem de Palavras:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
-
-        btn_render_hist = st.form_submit_button("Gerar Gráficos e Nuvem", type="primary")
-
-    if btn_render_hist:
-        # Filtra o DataFrame Base pelo Ano
-        df_hist = df_geral[(df_geral['Ano'] >= anos_sel[0]) & (df_geral['Ano'] <= anos_sel[1])].copy()
-        
-        if df_hist.empty:
-            st.warning("Não há documentos no intervalo de anos selecionado.")
+# --- SEÇÃO 3: EVOLUÇÃO CRONOLÓGICA ---
+st.header("📈 Evolução Histórica (Temporal)")
+with st.form("form_historico"):
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        anos_sel_hist = st.slider("Intervalo de Anos (Gráfico):", min_ano, max_ano, (min_ano, max_ano), 1)
+        agrupar_niveis_hist = st.radio("Visão dos Níveis:", ["Agrupar tudo (Total)", "Separar Teses e Dissertações"], horizontal=True)
+    with col_h2:
+        modo_grafico = st.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Conceito (Palavras-chave)"], horizontal=True)
+        if modo_grafico == "Análise por Conceito (Palavras-chave)":
+            conceitos_sel = st.multiselect("Conceitos:", conceitos_unicos, default=top_5_conceitos)
         else:
-            # === RENDERIZAÇÃO DO GRÁFICO HISTÓRICO (SEÇÃO 3) ===
-            st.markdown("### Evolução Cronológica")
-            if modo_grafico == "Visão Geral (Volume de Publicações)":
-                if agrupar_niveis == "Agrupar tudo numa única linha (Total)":
-                    df_plot = df_hist.groupby('Ano').size().reset_index(name='Volume')
-                    fig = px.line(df_plot, x='Ano', y='Volume', markers=True, title="Total de Publicações por Ano")
-                else:
-                    df_plot = df_hist.groupby(['Ano', 'nivel_academico']).size().reset_index(name='Volume')
-                    fig = px.line(df_plot, x='Ano', y='Volume', color='nivel_academico', markers=True, title="Publicações por Ano (Separado por Nível)")
-            
-            else: # Análise por Conceito
-                if not conceitos_sel:
-                    st.warning("Selecione pelo menos um conceito para a análise.")
+            conceitos_sel = []
+
+    btn_render_hist = st.form_submit_button("Atualizar Gráfico Histórico", type="primary")
+
+if btn_render_hist and not df_geral.empty:
+    df_hist = df_geral[(df_geral['Ano'] >= anos_sel_hist[0]) & (df_geral['Ano'] <= anos_sel_hist[1])].copy()
+    if df_hist.empty:
+        st.warning("Não há documentos no intervalo selecionado.")
+    else:
+        if modo_grafico == "Visão Geral (Volume)":
+            if agrupar_niveis_hist == "Agrupar tudo (Total)":
+                df_plot = df_hist.groupby('Ano').size().reset_index(name='Volume')
+                fig = px.line(df_plot, x='Ano', y='Volume', markers=True, title="Total de Publicações por Ano")
+            else:
+                df_plot = df_hist.groupby(['Ano', 'nivel_academico']).size().reset_index(name='Volume')
+                fig = px.line(df_plot, x='Ano', y='Volume', color='nivel_academico', markers=True, title="Publicações por Ano (Separado por Nível)")
+        else:
+            if not conceitos_sel:
+                st.warning("Selecione pelo menos um conceito.")
+                fig = None
+            else:
+                df_exp = df_hist.explode('palavras_chave')
+                df_exp = df_exp[df_exp['palavras_chave'].isin(conceitos_sel)]
+                if df_exp.empty:
+                    st.info("Os conceitos não aparecem no intervalo selecionado.")
                     fig = None
                 else:
-                    # Explode (achata) as palavras-chave para contar os anos
-                    df_exp = df_hist.explode('palavras_chave')
-                    df_exp = df_exp[df_exp['palavras_chave'].isin(conceitos_sel)]
-                    
-                    if df_exp.empty:
-                        st.info("Os conceitos selecionados não aparecem no intervalo de tempo escolhido.")
-                        fig = None
+                    if agrupar_niveis_hist == "Agrupar tudo (Total)":
+                        df_plot = df_exp.groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequência')
+                        fig = px.line(df_plot, x='Ano', y='Frequência', color='palavras_chave', markers=True, title="Evolução de Conceitos Específicos")
                     else:
-                        if agrupar_niveis == "Agrupar tudo numa única linha (Total)":
-                            df_plot = df_exp.groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequência')
-                            fig = px.line(df_plot, x='Ano', y='Frequência', color='palavras_chave', markers=True, title="Evolução de Conceitos Específicos")
-                        else:
-                            # Concatena o nome do conceito com o nível para legibilidade
-                            df_exp['Linha'] = df_exp['palavras_chave'] + " (" + df_exp['nivel_academico'].str.split(' ').str[0] + ")"
-                            df_plot = df_exp.groupby(['Ano', 'Linha']).size().reset_index(name='Frequência')
-                            fig = px.line(df_plot, x='Ano', y='Frequência', color='Linha', markers=True, title="Evolução de Conceitos (Separado por Nível)")
+                        df_exp['Linha'] = df_exp['palavras_chave'] + " (" + df_exp['nivel_academico'].str.split(' ').str[0] + ")"
+                        df_plot = df_exp.groupby(['Ano', 'Linha']).size().reset_index(name='Frequência')
+                        fig = px.line(df_plot, x='Ano', y='Frequência', color='Linha', markers=True, title="Evolução de Conceitos (Separado por Nível)")
 
-            if fig:
-                fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
-                st.plotly_chart(fig, use_container_width=True)
+        if fig:
+            fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
+            st.plotly_chart(fig, use_container_width=True)
 
+st.markdown("---")
 
-            # === RENDERIZAÇÃO DA NUVEM DE PALAVRAS (SEÇÃO 4) ===
-            st.markdown("### Nuvem de Palavras (Lexicometria)")
-            
-            texto_nuvem = ""
-            if fonte_nuvem == "Títulos dos Documentos":
-                texto_nuvem = " ".join(df_hist['titulo'].dropna().astype(str).tolist())
-            else:
-                lista_c = []
-                for lst in df_hist['palavras_chave']: lista_c.extend(lst)
-                # Substitui espaços por underscores nos conceitos para a nuvem não separar "gestão" de "conhecimento"
-                texto_nuvem = " ".join([c.replace(" ", "_") for c in lista_c])
-                
-            if not texto_nuvem.strip():
-                st.info("Não há texto suficiente para gerar a nuvem de palavras neste período.")
-            else:
-                # Stopwords robustas para o contexto académico em português
-                stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'para', 'com', 'não', 'uma', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento'])
-                
-                # Gera a imagem
-                wc = WordCloud(width=800, height=400, background_color='#1E1E1E', colormap='Wistia', stopwords=stopwords_pt, max_words=100).generate(texto_nuvem)
-                
-                # Renderiza usando Matplotlib (Embutido no Streamlit)
-                fig_wc, ax = plt.subplots(figsize=(12, 6), facecolor='#1E1E1E')
-                ax.imshow(wc, interpolation='bilinear')
-                ax.axis('off')
-                fig_wc.tight_layout(pad=0)
-                
-                st.pyplot(fig_wc)
-                
-                # Dica explicativa sobre o sublinhado nos conceitos
-                if fonte_nuvem == "Conceitos (Palavras-chave)":
-                    st.caption("💡 *Nota: Os espaços entre palavras compostas (ex: 'ciência_de_redes') foram substituídos por sublinhado (_) para que a Nuvem de Palavras trate o conceito como uma unidade única e não separe as palavras.*")
-else:
-    st.info("Não existem dados temporais válidos para exibir.")
+# --- SEÇÃO 4: NUVEM DE PALAVRAS (INTERATIVA) ---
+st.header("☁️ Lexicometria e Nuvem de Palavras")
+st.write("Identifique os termos mais proeminentes. Passe o rato sobre as palavras para ver a contagem exata.")
+
+with st.form("form_nuvem"):
+    col_n1, col_n2 = st.columns(2)
+    with col_n1:
+        anos_sel_nuvem = st.slider("Intervalo de Anos (Nuvem):", min_ano, max_ano, (min_ano, max_ano), 1)
+    with col_n2:
+        fonte_nuvem = st.radio("Base de texto:", ["Conceitos (Palavras-chave)", "Títulos dos Documentos"], horizontal=True)
+
+    btn_render_nuvem = st.form_submit_button("Gerar Nuvem de Palavras", type="primary")
+
+if btn_render_nuvem and not df_geral.empty:
+    df_nuvem = df_geral[(df_geral['Ano'] >= anos_sel_nuvem[0]) & (df_geral['Ano'] <= anos_sel_nuvem[1])].copy()
+    if df_nuvem.empty:
+        st.warning("Não há documentos no intervalo selecionado.")
+    else:
+        freq_dict = obter_frequencias_texto(df_nuvem, fonte_nuvem)
+        if not freq_dict:
+            st.info("Não foi possível extrair palavras suficientes para a nuvem.")
+        else:
+            # Renderiza o HTML interativo via ECharts
+            html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
+            components.html(html_nuvem, height=480, scrolling=False)

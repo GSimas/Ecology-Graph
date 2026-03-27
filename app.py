@@ -2,8 +2,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import networkx as nx
 from pyvis.network import Network
-from sickle import Sickle
-import unicodedata
 import json
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -14,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização customizada (CSS) para deixar a interface mais moderna
+# Estilização customizada (CSS)
 st.markdown("""
     <style>
     .main { background-color: #1E1E1E; color: #FFFFFF; }
@@ -23,20 +21,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE BACK-END (COM CACHE PARA PERFORMANCE) ---
+# --- FUNÇÕES DE BACK-END ---
 @st.cache_data
 def carregar_dados_locais():
-    """Lê o arquivo JSON estático do repositório."""
+    """Lê o ficheiro JSON estático do repositório."""
     try:
         with open('base_ppgegc.json', 'r', encoding='utf-8') as f:
             dados = json.load(f)
         return dados
     except FileNotFoundError:
-        st.error("Arquivo base_ppgegc.json não encontrado. Verifique se ele está no repositório.")
+        st.error("Ficheiro base_ppgegc.json não encontrado. Verifique se ele está no repositório.")
         return []
-
-# E na hora de chamar os dados, você simplesmente usa:
-# dados = carregar_dados_locais()
 
 @st.cache_resource
 def gerar_grafo_html(dados):
@@ -61,13 +56,18 @@ def gerar_grafo_html(dados):
     # Configuração do Pyvis
     net = Network(height='600px', width='100%', bgcolor='#222222', font_color='white', select_menu=True, filter_menu=True, cdn_resources='remote')
     net.from_nx(G)
+    
+    # OTIMIZAÇÃO: Adicionado 'stabilization' para congelar a física após carregar e evitar lentidão extrema
     net.set_options("""
     var options = {
-      "physics": {"barnesHut": {"gravitationalConstant": -15000, "springLength": 150}},
+      "physics": {
+          "barnesHut": {"gravitationalConstant": -15000, "springLength": 150},
+          "stabilization": {"enabled": true, "iterations": 150}
+      },
       "interaction": {"hover": true, "navigationButtons": true}
     }
     """)
-    # Salva o arquivo temporário
+    
     path = "grafo_temp.html"
     net.save_graph(path)
     return path, G.number_of_nodes(), G.number_of_edges()
@@ -77,11 +77,22 @@ def gerar_grafo_html(dados):
 st.title("🌌 Ecologia do Conhecimento: Rede Acadêmica UFSC")
 st.markdown("*Uma exploração interativa das tessituras do saber científico, suas raízes e ramificações.*")
 
+# 1. Carrega todos os dados primeiro para saber o tamanho total
+dados_completos = carregar_dados_locais()
+total_documentos = len(dados_completos) if len(dados_completos) > 0 else 100
+
 # Barra lateral de controles
 with st.sidebar:
     st.header("Configurações da Pesquisa")
-    st.write("Ajuste os parâmetros para buscar teses e dissertações no repositório.")
-    n_registros = st.slider("Número de documentos para extrair:", min_value=10, max_value=100, value=30, step=10)
+    st.write("Ajuste os parâmetros para visualizar a rede.")
+    
+    # 2. O slider agora usa o total de documentos como limite máximo e inicia em 30 para ser rápido
+    n_registros = st.slider("Número de documentos para visualizar inicialmente:", 
+                            min_value=5, 
+                            max_value=total_documentos, 
+                            value=30, 
+                            step=5)
+    
     st.markdown("---")
     st.info("Legenda da Rede:\n"
             "- 🟥 Quadrados: Teses/Dissertações\n"
@@ -89,25 +100,25 @@ with st.sidebar:
             "- ⭐ Estrelas: Orientadores\n"
             "- 🔺 Triângulos: Palavras-chave")
 
-# Executa as funções (mostra um spinner carregando na tela)
-dados = carregar_dados_locais()
-caminho_html, num_nos, num_arestas = gerar_grafo_html(dados)
+# 3. FILTRO ATIVO: Corta a lista de dados consoante o valor escolhido no slider pelo utilizador
+dados_filtrados = dados_completos[:n_registros]
+
+# Executa as funções APENAS com os dados filtrados
+caminho_html, num_nos, num_arestas = gerar_grafo_html(dados_filtrados)
 
 # Painel de Métricas Rápidas (KPIs)
-st.markdown("### 📊 Panorama da Rede Extraída")
+st.markdown("### 📊 Panorama da Rede Renderizada")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Documentos", len(dados))
+col1.metric("Documentos no ecrã", len(dados_filtrados))
 col2.metric("Total de Nós (Entidades)", num_nos)
 col3.metric("Total de Conexões", num_arestas)
-col4.metric("Densidade", f"{(num_arestas / num_nos):.2f} arestas/nó")
+col4.metric("Densidade", f"{(num_arestas / num_nos):.2f} arestas/nó" if num_nos > 0 else "0")
 
 st.markdown("---")
 
 # Renderização do Grafo Interativo dentro do Streamlit
 st.markdown("### 🕸️ Grafo Interativo")
-st.write("Utilize os menus dentro do quadro abaixo para buscar entidades específicas ou filtrar por categoria.")
 
-# Lê o HTML gerado pelo Pyvis e injeta no Streamlit
 with open(caminho_html, 'r', encoding='utf-8') as f:
     html_data = f.read()
 

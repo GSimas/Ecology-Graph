@@ -80,7 +80,24 @@ def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
             descricoes = meta.get('description', [])
             resumo = max(descricoes, key=len) if descricoes else ""
             
-            dados_extraidos.append({'titulo': titulo, 'nivel_academico': nivel, 'autores': autores, 'orientador': orientador, 'co_orientadores': co_orientadores, 'possui_coorientador': len(co_orientadores) > 0, 'palavras_chave': pks, 'ano': ano_real, 'resumo': resumo, 'programa_origem': nome_prog})
+            # --- NOVO: Capturar a URL (dc.identifier.uri) ---
+            identificadores = meta.get('identifier', [])
+            # Procura na lista de identificadores aquele que começa com 'http'
+            url_doc = next((link for link in identificadores if str(link).startswith('http')), "")
+            
+            dados_extraidos.append({
+                'titulo': titulo, 
+                'nivel_academico': nivel, 
+                'autores': autores, 
+                'orientador': orientador, 
+                'co_orientadores': co_orientadores, 
+                'possui_coorientador': len(co_orientadores) > 0, 
+                'palavras_chave': pks, 
+                'ano': ano_real, 
+                'resumo': resumo, 
+                'programa_origem': nome_prog,
+                'url': url_doc  # --- NOVO CAMPO ADICIONADO ---
+            })
         except Exception: continue
     return dados_extraidos
 
@@ -217,10 +234,29 @@ if termo_ativo:
         st.info(f"**{termo_ativo}**")
         if tipo_busca == "Documento":
             doc = next((d for d in dados_completos if d['titulo'] == termo_ativo), {})
-            for a in doc.get('autores', []): st.button(f"👤 {a}", on_click=navegar_para, args=("Autor", a))
-            if doc.get('orientador'): st.button(f"🏫 {doc['orientador']}", on_click=navegar_para, args=("Orientador", doc['orientador']))
-            for pk in doc.get('palavras_chave', []): st.button(f"💡 {pk}", on_click=navegar_para, args=("Palavra-chave", pk))
-            with st.expander("Resumo"): st.write(doc.get('resumo', 'N/A'))
+            
+            # --- NOVO: Exibição dos Detalhes e URL ---
+            st.write(f"**Ano:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')} | **Programa:** {doc.get('programa_origem', 'N/A')}")
+            
+            if doc.get('url'):
+                st.markdown(f"🔗 **Link Oficial na UFSC:** [{doc['url']}]({doc['url']})")
+                st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Botões interativos
+            st.write("**Rede de Autoria e Orientação:**")
+            for a in doc.get('autores', []): 
+                st.button(f"👤 {a}", on_click=navegar_para, args=("Autor", a))
+            if doc.get('orientador'): 
+                st.button(f"🏫 {doc['orientador']}", on_click=navegar_para, args=("Orientador", doc['orientador']))
+            for co in doc.get('co_orientadores', []):
+                st.button(f"🤝 {co}", on_click=navegar_para, args=("Co-orientador", co))
+                
+            st.write("**Palavras-chave:**")
+            for pk in doc.get('palavras_chave', []): 
+                st.button(f"💡 {pk}", on_click=navegar_para, args=("Palavra-chave", pk))
+                
+            with st.expander("Ler Resumo (Abstract)"): 
+                st.write(doc.get('resumo', 'Resumo não disponível.'))
         elif tipo_busca == "Autor":
             docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
             for d in docs: st.button(f"📄 {d['titulo']}", on_click=navegar_para, args=("Documento", d['titulo']))

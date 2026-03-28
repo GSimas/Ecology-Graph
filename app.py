@@ -270,13 +270,24 @@ def calcular_sna_global(dados):
         mt = d.get('macrotema')
         if mt: G.add_node(mt, tipo='Macrotema'); G.add_edge(doc, mt)
 
-    deg_cent, bet_cent, grau_abs = nx.degree_centrality(G), nx.betweenness_centrality(G), dict(G.degree())
+    deg_cent = nx.degree_centrality(G)
+    bet_cent = nx.betweenness_centrality(G)
+    close_cent = nx.closeness_centrality(G) # Novo: Closeness
+    grau_abs = dict(G.degree())
+    
     try: mapa_comunidades = {node: i+1 for i, comm in enumerate(nx_comm.louvain_communities(G)) for node in comm}
     except: mapa_comunidades = {}
     rank_bet = {node: rank+1 for rank, (node, _) in enumerate(sorted(bet_cent.items(), key=lambda x: x[1], reverse=True))}
 
-    return {node: {'Grau Absoluto': grau_abs.get(node, 0), 'Degree Centrality': deg_cent.get(node, 0), 'Betweenness': bet_cent.get(node, 0), 'Comunidade': mapa_comunidades.get(node, 'N/A'), 'Ranking Global': rank_bet.get(node, 'N/A')} for node in G.nodes()}
-
+    return {node: {
+        'Grau Absoluto': grau_abs.get(node, 0), 
+        'Degree Centrality': deg_cent.get(node, 0), 
+        'Betweenness': bet_cent.get(node, 0), 
+        'Closeness': close_cent.get(node, 0), # Novo
+        'Comunidade': mapa_comunidades.get(node, 'N/A'), 
+        'Ranking Global': rank_bet.get(node, 'N/A')
+    } for node in G.nodes()}
+    
 @st.cache_resource
 def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_tamanho="Tamanho Fixo", _sna_global=None):
     G = nx.Graph()
@@ -449,42 +460,89 @@ st.markdown("---")
 # --- MÓDULO DE MACROTEMAS ---
 st.header("🧠 Análise Temática Estrutural")
 
+# IMPORTANTE: Movemos o cálculo SNA para cá para alimentar a nova Super-Tabela
+sna_global = calcular_sna_global(dados_completos)
+
 if not st.session_state['macrotemas_computados']:
     st.info("Os documentos extraídos ainda não possuem categorização temática.")
-    
     if st.button("Computar Macrotemas Agora", type="primary"):
         try:
             minha_chave_gemini = st.secrets["GEMINI_API_KEY"]
             with st.spinner("Analisando ecossistema de dados com NMF e IA do Google Gemini..."):
-                st.session_state['dados_completos'] = aplicar_macrotemas(
-                    dados_completos, 
-                    api_key=minha_chave_gemini
-                )
+                st.session_state['dados_completos'] = aplicar_macrotemas(dados_completos, api_key=minha_chave_gemini)
                 st.session_state['macrotemas_computados'] = True
-                
                 calcular_sna_global.clear()
                 gerar_nodos_agraph.clear()
                 st.rerun()
-                
         except KeyError:
-            st.error("❌ Erro: 'GEMINI_API_KEY' não encontrada nos Secrets do Streamlit.")
-            st.info("💡 Certifique-se de que adicionou a chave no painel do Streamlit Cloud em 'Settings' -> 'Secrets'.")
-            
+            st.error("❌ Erro: 'GEMINI_API_KEY' não encontrada nos Secrets.")
 else:
-    todos_temas = [d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos]
-    contagem_temas = Counter(todos_temas)
-    df_temas = pd.DataFrame(contagem_temas.items(), columns=["Macrotema", "Quantidade de Documentos"]).sort_values(by="Quantidade de Documentos", ascending=False)
+    # --- NOVA TABELA ROBUSTA DE MACROTEMAS ---
+    O_total = len(dados_completos)
+    contagem_ori = Counter([d.get('orientador') for d in dados_completos if d.get('orientador')])
+    contagem_coori = Counter([co for d in dados_completos for co in d.get('co_orientadores', [])])
     
-    col_tabela, col_vazia = st.columns([2, 1])
-    with col_tabela:
-        st.dataframe(df_temas, use_container_width=True, hide_index=True)
+    linhas_tabela = []
+    macrotemas_unicos = set([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos])
+    
+    for mt in macrotemas_unicos:
+        docs_mt = [d for d in dados_completos if d.get('macrotema', 'Multidisciplinar / Transversal') == mt]
+        O_k = len(docs_mt)
+        
+        teses = sum(1 for d in docs_mt if 'Tese' in d.get('nivel_academico', ''))
+        dissertacoes = sum(1 for d in docs_mt if 'Disserta' in d.get('nivel_academico', ''))
+        
+        anos = [int(d['ano']) for d in docs_mt if d.get('ano') and str(d['ano']).isdigit()]
+        ano_antigo = min(anos) if anos else "-"
+        ano_recente = max(anos) if anos else "-"
+        ano_modal = Counter(anos).most_common(1)[0][0] if anos else "-"
+        
+        # Lógica interna para descobrir o Especialista via Quociente Locacional
+        def top_ql(entidades_na_mt, contagem_global):
+            max_ql = -1
+            top_ent = "-"
+            contagem_local = Counter(entidades_na_mt)
+            for ent, O_ik in contagem_local.items():
+                O_i = contagem_global.get(ent, 0)
+                if O_i > 0 and O_k > 0:
+                    ql = (O_ik / O_i) / (O_k / O_total)
+                    if ql > max_ql:
+                        max_ql = ql
+                        top_ent = ent
+                    elif ql == max_ql: # Desempate por volume bruto
+                        if O_ik > contagem_local.get(top_ent, 0): top_ent = ent
+            return top_ent, max_ql
+
+        oris_mt = [d.get('orientador') for d in docs_mt if d.get('orientador')]
+        top_ori, ql_ori = top_ql(oris_mt, contagem_ori)
+        
+        cooris_mt = [co for d in docs_mt for co in d.get('co_orientadores', [])]
+        top_coori, ql_coori = top_ql(cooris_mt, contagem_coori)
+        
+        mt_sna = sna_global.get(mt, {})
+        
+        linhas_tabela.append({
+            "Macrotema": mt,
+            "Docs": O_k,
+            "Teses": teses,
+            "Dissertações": dissertacoes,
+            "Grau": mt_sna.get('Grau Absoluto', 0),
+            "Betweenness": round(mt_sna.get('Betweenness', 0.0), 4),
+            "Closeness": round(mt_sna.get('Closeness', 0.0), 4),
+            "Especialista (Orientador)": f"{top_ori} (QL: {round(ql_ori,1)})" if top_ori != "-" else "-",
+            "Especialista (Co-orientador)": f"{top_coori} (QL: {round(ql_coori,1)})" if top_coori != "-" else "-",
+            "Início": ano_antigo,
+            "Pico Modal": ano_modal,
+            "Recente": ano_recente
+        })
+        
+    df_temas = pd.DataFrame(linhas_tabela).sort_values(by="Docs", ascending=False)
+    st.dataframe(df_temas, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 
 # --- MOTOR DE BUSCA (EGO-GRAPH) ---
 st.header("🔍 Motor de Busca e Dossiê")
-
-sna_global = calcular_sna_global(dados_completos)
 
 opcoes_busca = ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"]
 if st.session_state['macrotemas_computados']:
@@ -546,46 +604,54 @@ if termo_ativo:
             st.write(f"**Documentos Escritos ({len(docs)}):**")
             for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_aut_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
             
-        elif tipo_busca == "Orientador":
-            docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
-            # NOVA CHAMADA COM DADOS COMPLETOS
+        elif tipo_busca in ["Orientador", "Co-orientador"]:
+            if tipo_busca == "Orientador":
+                docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
+            else:
+                docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+                
             gerar_tabela_macrotemas_perfil(docs, dados_completos)
             
-            st.write(f"**Documentos Orientados ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_ori_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            st.write(f"**Documentos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(docs)}):**")
             
-        elif tipo_busca == "Co-orientador":
-            docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
-            # NOVA CHAMADA COM DADOS COMPLETOS
-            gerar_tabela_macrotemas_perfil(docs, dados_completos)
-            
-            st.write(f"**Documentos Co-orientados ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_co_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            # Agrupar documentos do Orientador por Macrotema
+            from collections import defaultdict
+            docs_por_mt = defaultdict(list)
+            for d in docs:
+                docs_por_mt[d.get('macrotema', 'Multidisciplinar / Transversal')].append(d)
+                
+            for mt, docs_mt in docs_por_mt.items():
+                st.markdown(f"**🏷️ {mt}**")
+                for i, d in enumerate(docs_mt):
+                    # Usamos chaves dinâmicas exclusivas para evitar conflitos no Streamlit
+                    st.button(f"📄 {d['titulo']}", key=f"btn_{tipo_busca}_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Palavra-chave":
             docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
-            # NOVA CHAMADA COM DADOS COMPLETOS
             gerar_tabela_macrotemas_perfil(docs, dados_completos)
             
-            st.write(f"**Documentos Associados ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_pk_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            # Expander para evitar poluição visual em PKs muito grandes
+            with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
+                for i, d in enumerate(docs): 
+                    st.button(f"📄 {d['titulo']}", key=f"btn_pk_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Macrotema":
             docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
-            
-            # NOVA CHAMADA COM DADOS COMPLETOS
             gerar_tabela_entidades_por_macrotema(docs, dados_completos)
             
-            st.write(f"**Documentos encontrados na categoria ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
-
+            # Expander para esconder os documentos de um Macrotema gigante
+            with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
+                for i, d in enumerate(docs): 
+                    st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
+                    
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})
         if metricas:
             st.success(f"Cluster: {metricas.get('Comunidade')} | Rank: #{metricas.get('Ranking Global')}")
             st.metric("Grau (Conexões)", metricas.get('Grau Absoluto'))
             st.metric("Betweenness", f"{metricas.get('Betweenness', 0):.4f}")
-
+            st.metric("Closeness", f"{metricas.get('Closeness', 0):.4f}") 
+            
     st.markdown("### 🌌 Órbita de Relacionamentos")
     
     col_orb1, col_orb2 = st.columns(2)

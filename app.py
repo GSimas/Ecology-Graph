@@ -118,49 +118,66 @@ GRUPOS DE PALAVRAS:
     return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
-def gerar_tabela_entidades_por_macrotema(docs):
-    """Gera uma tabela consolidando Orientadores, Co-orientadores e Palavras-chave associados a um Macrotema."""
+def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
+    """Gera tabela de Orientadores, Co-orientadores e PKs de um Macrotema, incluindo o QL."""
+    if not docs_macrotema: return
+            
     tabela = []
-    for d in docs:
+    for d in docs_macrotema:
         nivel = d.get('nivel_academico', 'Outros')
         
-        # Extrai o Orientador
         if d.get('orientador'):
             tabela.append({'Entidade': d['orientador'], 'Tipo': 'Orientador', 'Nível': nivel})
-            
-        # Extrai os Co-orientadores
         for co in d.get('co_orientadores', []):
             tabela.append({'Entidade': co, 'Tipo': 'Co-orientador', 'Nível': nivel})
-            
-        # Extrai as Palavras-chave
         for pk in d.get('palavras_chave', []):
             tabela.append({'Entidade': pk, 'Tipo': 'Palavra-chave', 'Nível': nivel})
             
-    if not tabela:
-        return
+    if not tabela: return
         
     df = pd.DataFrame(tabela)
-    # Tabela dinâmica cruzando a Entidade e seu Tipo com os Níveis dos documentos
     resumo = pd.crosstab(index=[df['Entidade'], df['Tipo']], columns=df['Nível']).reset_index()
     
-    # Garante as colunas básicas
-    if 'Tese (Doutorado)' not in resumo.columns: resumo['Tese (Doutorado)'] = 0
-    if 'Dissertação (Mestrado)' not in resumo.columns: resumo['Dissertação (Mestrado)'] = 0
-    if 'Outros' not in resumo.columns: resumo['Outros'] = 0
+    for col in ['Tese (Doutorado)', 'Dissertação (Mestrado)', 'Outros']:
+        if col not in resumo.columns: resumo[col] = 0
     
-    # Renomeia para ficar legível
-    resumo = resumo.rename(columns={
-        'Tese (Doutorado)': 'Teses',
-        'Dissertação (Mestrado)': 'Dissertações'
-    })
-    
-    # Calcula coluna Total
+    resumo = resumo.rename(columns={'Tese (Doutorado)': 'Teses', 'Dissertação (Mestrado)': 'Dissertações'})
     resumo['Total'] = resumo['Teses'] + resumo['Dissertações'] + resumo['Outros']
     
-    # Reordena as colunas e ordena do maior para o menor total
-    resumo = resumo[['Entidade', 'Tipo', 'Teses', 'Dissertações', 'Total']].sort_values(by='Total', ascending=False)
+    # --- CÁLCULO DO QUOCIENTE LOCACIONAL (QL) INVERSO ---
+    O_total = len(dados_totais) # Total geral (O)
+    O_k = len(docs_macrotema) # Total de docs no macrotema alvo (Ok)
     
-    st.write("**📊 Entidades conectadas a este Macrotema:**")
+    # Contagens globais otimizadas para não travar o loop
+    contagem_ori = Counter([d.get('orientador') for d in dados_totais if d.get('orientador')])
+    contagem_coori = Counter([co for d in dados_totais for co in d.get('co_orientadores', [])])
+    contagem_pk = Counter([pk for d in dados_totais for pk in d.get('palavras_chave', [])])
+    
+    ql_valores = []
+    for idx, row in resumo.iterrows():
+        i = row['Entidade']
+        tipo = row['Tipo']
+        O_ik = row['Total'] # Quantidade que este Orientador fez NESTE macrotema
+        
+        # Puxa o total global deste Orientador/Co/PK específico (Oi)
+        if tipo == 'Orientador': O_i = contagem_ori.get(i, 0)
+        elif tipo == 'Co-orientador': O_i = contagem_coori.get(i, 0)
+        else: O_i = contagem_pk.get(i, 0)
+        
+        # Fórmula: QL = (Oik / Oi) / (Ok / O)
+        if O_i == 0 or O_k == 0:
+            ql = 0.0
+        else:
+            ql = (O_ik / O_i) / (O_k / O_total)
+            
+        ql_valores.append(round(ql, 2))
+        
+    resumo['QL (Especialização)'] = ql_valores
+    
+    # Ordena primeiro pelo QL para ver as maiores autoridades no topo
+    resumo = resumo[['Entidade', 'Tipo', 'Teses', 'Dissertações', 'Total', 'QL (Especialização)']].sort_values(by=['Tipo', 'QL (Especialização)'], ascending=[True, False])
+    
+    st.write("**📊 Entidades conectadas a este Macrotema e Grau de Especialização (QL):**")
     st.dataframe(resumo, use_container_width=True, hide_index=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -313,8 +330,8 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
     return nodes, edges
 
 # --- FUNÇÃO AUXILIAR PARA DOSSIÊ ---
-def gerar_tabela_macrotemas_perfil(docs):
-    """Gera uma tabela consolidando os macrotemas de uma lista de documentos (por Orientador, Autor, etc.)"""
+def gerar_tabela_macrotemas_perfil(docs, dados_totais):
+    """Gera uma tabela consolidando os macrotemas de um perfil e calcula o Quociente Locacional (QL)."""
     if not st.session_state.get('macrotemas_computados'):
         return
         
@@ -324,32 +341,45 @@ def gerar_tabela_macrotemas_perfil(docs):
         nivel = d.get('nivel_academico', 'Outros')
         tabela.append({'Macrotema': mt, 'Nível': nivel})
         
-    if not tabela:
-        return
+    if not tabela: return
         
     df = pd.DataFrame(tabela)
-    # Tabela dinâmica contando a ocorrência de níveis por macrotema
     resumo = pd.crosstab(df['Macrotema'], df['Nível']).reset_index()
     
-    # Garante as colunas básicas caso não existam na amostra deste perfil
-    if 'Tese (Doutorado)' not in resumo.columns: resumo['Tese (Doutorado)'] = 0
-    if 'Dissertação (Mestrado)' not in resumo.columns: resumo['Dissertação (Mestrado)'] = 0
-    if 'Outros' not in resumo.columns: resumo['Outros'] = 0
-    
-    # Renomeando para exibição limpa
-    resumo = resumo.rename(columns={
-        'Tese (Doutorado)': 'Teses',
-        'Dissertação (Mestrado)': 'Dissertações'
-    })
-    
-    # Calcula coluna Total
+    # Garante as colunas básicas
+    for col in ['Tese (Doutorado)', 'Dissertação (Mestrado)', 'Outros']:
+        if col not in resumo.columns: resumo[col] = 0
+        
+    resumo = resumo.rename(columns={'Tese (Doutorado)': 'Teses', 'Dissertação (Mestrado)': 'Dissertações'})
     resumo['Total'] = resumo['Teses'] + resumo['Dissertações'] + resumo['Outros']
     
-    # Reordenando para foco nos maiores
-    resumo = resumo[['Macrotema', 'Teses', 'Dissertações', 'Outros', 'Total']].sort_values(by='Total', ascending=False)
+    # --- CÁLCULO DO QUOCIENTE LOCACIONAL (QL) ---
+    O_total = len(dados_totais) # Total de documentos no repositório (O)
+    O_i = len(docs) # Total de documentos do perfil atual (Oi)
+    contagem_global_mt = Counter([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_totais])
     
-    st.write("**📊 Frequência Temática deste Perfil:**")
+    ql_valores = []
+    for idx, row in resumo.iterrows():
+        k = row['Macrotema']
+        O_ik = row['Total'] # Docs do perfil (i) neste macrotema (k)
+        O_k = contagem_global_mt[k] # Total de docs neste macrotema (k) globalmente
+        
+        # Fórmula: QL = (Oik / Oi) / (Ok / O)
+        if O_i == 0 or O_k == 0:
+            ql = 0.0
+        else:
+            ql = (O_ik / O_i) / (O_k / O_total)
+            
+        ql_valores.append(round(ql, 2))
+        
+    resumo['QL (Especialização)'] = ql_valores
+    
+    # Reordenando para focar nos temas onde o perfil é MAIS especializado
+    resumo = resumo[['Macrotema', 'Teses', 'Dissertações', 'Outros', 'Total', 'QL (Especialização)']].sort_values(by='QL (Especialização)', ascending=False)
+    
+    st.write("**📊 Frequência Temática e Especialização (QL):**")
     st.dataframe(resumo, use_container_width=True, hide_index=True)
+    st.caption("*Nota: QL > 1 indica que a entidade é estatisticamente especializada neste macrotema em relação à média geral da universidade.*")
     st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -518,31 +548,36 @@ if termo_ativo:
             
         elif tipo_busca == "Orientador":
             docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
-            gerar_tabela_macrotemas_perfil(docs)
+            # NOVA CHAMADA COM DADOS COMPLETOS
+            gerar_tabela_macrotemas_perfil(docs, dados_completos)
+            
             st.write(f"**Documentos Orientados ({len(docs)}):**")
             for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_ori_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Co-orientador":
             docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
-            gerar_tabela_macrotemas_perfil(docs)
+            # NOVA CHAMADA COM DADOS COMPLETOS
+            gerar_tabela_macrotemas_perfil(docs, dados_completos)
+            
             st.write(f"**Documentos Co-orientados ({len(docs)}):**")
             for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_co_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Palavra-chave":
             docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
-            gerar_tabela_macrotemas_perfil(docs)
+            # NOVA CHAMADA COM DADOS COMPLETOS
+            gerar_tabela_macrotemas_perfil(docs, dados_completos)
+            
             st.write(f"**Documentos Associados ({len(docs)}):**")
             for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_pk_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Macrotema":
             docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
             
-            # --- CHAMA A NOVA TABELA AQUI ---
-            gerar_tabela_entidades_por_macrotema(docs)
+            # NOVA CHAMADA COM DADOS COMPLETOS
+            gerar_tabela_entidades_por_macrotema(docs, dados_completos)
             
             st.write(f"**Documentos encontrados na categoria ({len(docs)}):**")
-            for i, d in enumerate(docs): 
-                st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
 
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})

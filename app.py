@@ -623,26 +623,27 @@ if termo_ativo:
             for mt, docs_mt in docs_por_mt.items():
                 st.markdown(f"**🏷️ {mt}**")
                 for i, d in enumerate(docs_mt):
-                    # Usamos chaves dinâmicas exclusivas para evitar conflitos no Streamlit
-                    st.button(f"📄 {d['titulo']}", key=f"btn_{tipo_busca}_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
+                    # Chave criptográfica infalível usando hash do título inteiro
+                    chave_unica = f"btn_{tipo_busca}_{abs(hash(d['titulo']))}_{i}"
+                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Palavra-chave":
             docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
             gerar_tabela_macrotemas_perfil(docs, dados_completos)
             
-            # Expander para evitar poluição visual em PKs muito grandes
             with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    st.button(f"📄 {d['titulo']}", key=f"btn_pk_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
+                    chave_unica = f"btn_pk_{abs(hash(d['titulo']))}_{i}"
+                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Macrotema":
             docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
             gerar_tabela_entidades_por_macrotema(docs, dados_completos)
             
-            # Expander para esconder os documentos de um Macrotema gigante
             with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    st.button(f"📄 {d['titulo']}", key=f"btn_mt_{i}_{d['titulo'][:15]}", on_click=navegar_para, args=("Documento", d['titulo']))
+                    chave_unica = f"btn_mt_{abs(hash(d['titulo']))}_{i}"
+                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
                     
     with col_sna:
         metricas = sna_global.get(termo_ativo, {})

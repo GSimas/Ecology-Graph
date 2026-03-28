@@ -9,11 +9,7 @@ import plotly.express as px
 import re
 import unicodedata
 from collections import Counter
-from sickle import Sickle
-from sickle.oaiexceptions import NoRecordsMatch
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import NMF
-import google.generativeai as genai
+import gzip
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -38,85 +34,6 @@ if 'macrotemas_computados' not in st.session_state:
 def navegar_para(novo_tipo, novo_termo): 
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
-def aplicar_macrotemas(dados, api_key, num_topicos=12):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash') 
-    
-    sujeira_academica = [
-        "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
-        "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
-        "neste", "esta", "está", "este", "pelo", "pela", "seus", "suas", "nas", "aos", "meu", "sua", "através",
-        "the", "of", "and", "in", "to", "for", "with", "on", "at", "by", "from", "an", "is", "it", "this", "that",
-        "study", "analysis", "based", "using", "results", "work", "research", "paper", "thesis", "dissertation",
-        "analise", "estudo", "desenvolvimento", "proposta", "metodo", "processo", "sistema", "modelo", "projeto",
-        "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação",
-        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave"
-    ]
-
-    textos = []
-    for doc in dados:
-        bruto = f"{(doc.get('titulo', '') + ' ') * 3} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
-        limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
-        textos.append(limpo)
-
-    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=800)
-    
-    try:
-        tfidf_matrix = vectorizer.fit_transform(textos)
-        nmf_model = NMF(n_components=num_topicos, random_state=42, init='nndsvd')
-        nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
-        feature_names = vectorizer.get_feature_names_out()
-    except Exception as e:
-        st.error(f"Erro na vetorização: {e}")
-        return dados
-
-    clusters = []
-    for idx, topic in enumerate(nmf_model.components_):
-        top_words = [feature_names[i] for i in topic.argsort()[:-8:-1]]
-        clusters.append(f"Grupo {idx+1}: {', '.join(top_words)}")
-    
-    contexto = "\n".join(clusters)
-
-    prompt_humanizado = f"""Você é um especialista em epistemologia e taxonomia acadêmica.
-Abaixo estão {num_topicos} grupos de palavras-chave extraídas de agrupamentos matemáticos (NMF) de teses e dissertações.
-Sua missão é batizar cada grupo com um nome definitivo e que represente com precisão essa subárea do conhecimento.
-
-Diretrizes rigorosas:
-- Crie títulos com no máximo 4 palavras.
-- NÃO use palavras genéricas como 'Estudo', 'Análise', 'Área de', 'Aplicações', 'Correlatas'.
-- Vá direto ao ponto. Exemplo: Se ler 'soldagem, laser, liga, tensão', responda 'Tecnologias de Soldagem'.
-- Retorne APENAS uma lista estritamente numerada de 1 a {num_topicos}, sem introduções ou conclusões.
-
-GRUPOS DE PALAVRAS:
-{contexto}"""
-
-    try:
-        response = model.generate_content(
-            prompt_humanizado,
-            generation_config=genai.types.GenerationConfig(
-                candidate_count=1,
-                temperature=0.4,
-            )
-        )
-        texto_resposta = response.text.strip()
-        respostas = texto_resposta.split('\n')
-        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
-        
-        if len(nomes_finais) < num_topicos:
-            raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes.")
-
-    except Exception as e:
-        st.error(f"Erro na API Gemini: {e}")
-        nomes_finais = []
-        for c in clusters:
-            palavras = c.split(': ')[1].split(', ')
-            nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
-
-    for i, doc in enumerate(dados):
-        top_idx = nmf_matrix[i].argmax()
-        doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
-
-    return dados
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
 def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
@@ -205,81 +122,6 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
         }
     )
     st.markdown("<br>", unsafe_allow_html=True)
-
-
-@st.cache_data
-def carregar_catalogo_programas():
-    try:
-        with open('programas_ufsc.json', 'r', encoding='utf-8') as f: return json.load(f)
-    except FileNotFoundError:
-        st.error("⚠️ Ficheiro 'programas_ufsc.json' não encontrado na raiz.")
-        return {}
-
-def extrair_melhor_ano(lista_datas):
-    if not lista_datas: return None
-    anos = [int(m) for d in lista_datas for m in re.findall(r'\b(19\d{2}|20\d{2})\b', str(d))]
-    return str(min(anos)) if anos else None
-
-def normalizar_nome(nome):
-    return ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn').strip().title() if nome else ""
-
-def normalizar_palavra_chave(pk):
-    return ''.join(c for c in unicodedata.normalize('NFD', pk.lower().strip()) if unicodedata.category(c) != 'Mn') if pk else ""
-
-def identificar_nivel(tipos, titulo=""):
-    tipos_str = " ".join(tipos).lower()
-    if 'doctoral' in tipos_str or 'tese' in tipos_str or 'tese' in titulo.lower(): return 'Tese (Doutorado)'
-    if 'master' in tipos_str or 'disserta' in tipos_str or 'disserta' in titulo.lower(): return 'Dissertação (Mestrado)'
-    return 'Outros'
-
-def realizar_extracao(set_spec, status_placeholder, nome_prog=""):
-    sickle = Sickle('https://repositorio.ufsc.br/oai/request', timeout=120)
-    try: records = sickle.ListRecords(metadataPrefix='oai_dc', set=set_spec)
-    except: return []
-    dados_extraidos, titulos_vistos, iterator, i = [], set(), iter(records), 0
-    
-    while True:
-        try: record = next(iterator)
-        except StopIteration: break
-        except Exception: break
-            
-        try:
-            i += 1
-            if i % 50 == 0: status_placeholder.info(f"⏳ [{nome_prog}] A extrair documentos... Já processados: **{i}**")
-            if record.header.deleted or not hasattr(record, 'metadata') or not record.metadata: continue
-            meta = record.metadata
-            titulo = meta.get('title', [''])[0].strip()
-            if not titulo or titulo in titulos_vistos: continue
-            titulos_vistos.add(titulo)
-            
-            autores = [normalizar_nome(a) for a in meta.get('creator', []) if a.strip()]
-            ano_real = extrair_melhor_ano(meta.get('date', []))
-            nivel = identificar_nivel(meta.get('type', []), titulo)
-            contrib = [normalizar_nome(c) for c in meta.get('contributor', []) if "ufsc" not in c.lower() and "universidade" not in c.lower()]
-            orientador = contrib[0] if len(contrib) > 0 else None
-            co_orientadores = contrib[1:] if len(contrib) > 1 else []
-            pks = list(set([normalizar_palavra_chave(pk) for pk in meta.get('subject', []) if pk]))
-            descricoes = meta.get('description', [])
-            resumo = max(descricoes, key=len) if descricoes else ""
-            
-            identificadores = meta.get('identifier', [])
-            url_doc = next((link for link in identificadores if str(link).startswith('http')), "")
-            
-            dados_extraidos.append({
-                'titulo': titulo, 
-                'nivel_academico': nivel, 
-                'autores': autores, 
-                'orientador': orientador, 
-                'co_orientadores': co_orientadores, 
-                'possui_coorientador': len(co_orientadores) > 0, 
-                'palavras_chave': pks, 
-                'ano': ano_real, 
-                'resumo': resumo, 
-                'programa_origem': nome_prog,
-                'url': url_doc 
-            })
-        except Exception: continue
-    return dados_extraidos
 
 @st.cache_data
 def calcular_sna_global(dados):
@@ -463,38 +305,66 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
     </html>
     """
 
-# --- INTERFACE DE EXTRAÇÃO ---
-if 'dados_completos' not in st.session_state:
-    st.title("🔌 Conexão Direta: Repositório Institucional UFSC")
-    colecoes_disponiveis = carregar_catalogo_programas()
+# --- CARREGAMENTO E SELEÇÃO DA BASE CONSOLIDADA ---
+@st.cache_data
+def carregar_base_consolidada():
+    try:
+        # Lê o arquivo GZIP diretamente da memória ('rt' = Read Text)
+        with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+# --- FUNÇÃO AUXILIAR PARA O CATÁLOGO LEVE ---
+@st.cache_data
+def carregar_catalogo_programas():
+    try:
+        # Lê apenas o arquivo leve (alguns KBs) para montar o menu rapidamente
+        with open('programas_ufsc.json', 'r', encoding='utf-8') as f: 
+            return json.load(f)
+    except FileNotFoundError:
+        st.error("⚠️ Ficheiro 'programas_ufsc.json' não encontrado na raiz.")
+        return {}
+
+# --- TELA DE SELEÇÃO INICIAL (CARREGAMENTO PREGUIÇOSO / LAZY LOADING) ---
+if 'dados_completos' not in st.session_state or st.session_state.get('recarregar'):
+    st.title("🔌 Seleção de Programas (PPGs)")
+    st.markdown("A base consolidada com os Macrotemas está pronta. Para otimizar a memória e a velocidade da rede, selecione os programas que deseja analisar antes de carregar os dados.")
     
-    if colecoes_disponiveis:
-        st.markdown("### Selecione os Programas para Analisar")
-        programas_selecionados = st.multiselect("Pode selecionar múltiplos Programas (PPGs):", list(colecoes_disponiveis.keys()))
-        
+    catalogo_leve = carregar_catalogo_programas()
+    programas_disponiveis = sorted(list(catalogo_leve.keys()))
+    
+    programas_selecionados = st.multiselect("Selecione um ou mais Programas de Pós-Graduação:", programas_disponiveis)
+    
+    if st.button("Carregar Dados e Iniciar Análise", type="primary"):
         if programas_selecionados:
-            for prog in programas_selecionados:
-                set_spec = colecoes_disponiveis[prog]
-                url = f"https://repositorio.ufsc.br/handle/{set_spec.split('_')[-1]}" if '_' in set_spec else "https://repositorio.ufsc.br/"
-                st.info(f"**{prog}**\n\n🔗 [Aceder à página original na UFSC]({url}) | 🪪 ID Interno OAI: `{set_spec}`")
-        
-        with st.form("form_extracao"):
-            btn_extrair = st.form_submit_button("Iniciar Extração ao Vivo", type="primary")
+            with st.spinner("Lendo a base consolidada e filtrando os PPGs selecionados. Isso levará apenas alguns segundos..."):
+                try:
+                    # O arquivo pesado de +100MB só é lido AQUI, após o clique
+                    with open('base_consolidada_ufsc.json.gz', 'r', encoding='utf-8') as f:
+                        base_total = json.load(f)
+                        
+                    # Filtra mantendo apenas os programas escolhidos
+                    dados_filtrados = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
+                    
+                    if not dados_filtrados:
+                        st.warning("Nenhum documento encontrado para os PPGs selecionados. Talvez o pipeline ainda não os tenha extraído.")
+                        st.stop()
+                        
+                    # Salva na sessão e destrava o aplicativo
+                    st.session_state['dados_completos'] = dados_filtrados
+                    st.session_state['nome_programa'] = f"{len(programas_selecionados)} PPG(s) Selecionado(s)"
+                    st.session_state['macrotemas_computados'] = True
+                    st.session_state['recarregar'] = False
+                    st.rerun()
+                    
+                except FileNotFoundError:
+                    st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado. Por favor, rode o pipeline de extração primeiro.")
+                    st.stop()
+        else:
+            st.warning("Por favor, selecione pelo menos um programa para continuar.")
             
-        status_box = st.empty()
-        if btn_extrair and programas_selecionados:
-            dados_agregados = []
-            for prog in programas_selecionados:
-                dados_agregados.extend(realizar_extracao(colecoes_disponiveis[prog], status_box, nome_prog=prog))
-            
-            if dados_agregados:
-                status_box.success("✅ Extração Concluída!")
-                st.session_state.update({
-                    'dados_completos': dados_agregados, 
-                    'nome_programa': prog if len(programas_selecionados)==1 else f"Análise Multidisciplinar ({len(programas_selecionados)} Programas)",
-                    'macrotemas_computados': False
-                })
-                st.rerun() 
+    # Trava a execução do resto do app (SNA, gráficos, etc.) até o usuário passar desta tela
     st.stop()
 
 # --- DASHBOARD PRINCIPAL ---
@@ -502,9 +372,15 @@ dados_completos = st.session_state['dados_completos']
 st.title("🌌 Ecologia do Conhecimento")
 st.subheader(f"Base: {st.session_state['nome_programa']}")
 
-if st.sidebar.button("🔄 Nova Extração", type="primary"):
-    del st.session_state['dados_completos']
-    st.session_state['macrotemas_computados'] = False
+# Botão na barra lateral para voltar e escolher outros PPGs
+if st.sidebar.button("🔄 Escolher outros PPGs", type="primary"):
+    st.session_state['recarregar'] = True
+    st.rerun()
+
+# Botão (opcional) para forçar leitura de um novo JSON gerado pelo pipeline
+if st.sidebar.button("📥 Atualizar Cache do JSON"):
+    carregar_base_consolidada.clear()
+    st.session_state['recarregar'] = True
     st.rerun()
 
 # KPIs Básicos
@@ -773,104 +649,74 @@ if termo_ativo:
 
 st.markdown("---")
 
-# --- MÓDULO DE MACROTEMAS (VISUALIZAÇÃO ESTRUTURAL) ---
+# --- MÓDULO DE MACROTEMAS ---
 st.header("🧠 Análise Temática Estrutural")
 
-if not st.session_state['macrotemas_computados']:
-    st.info("Os documentos extraídos ainda não possuem categorização temática.")
-    if st.button("Computar Macrotemas Agora", type="primary"):
-        try:
-            minha_chave_gemini = st.secrets["GEMINI_API_KEY"]
-            with st.spinner("Analisando ecossistema de dados com NMF e IA do Google Gemini..."):
-                st.session_state['dados_completos'] = aplicar_macrotemas(dados_completos, api_key=minha_chave_gemini)
-                st.session_state['macrotemas_computados'] = True
-                calcular_sna_global.clear()
-                gerar_nodos_agraph.clear()
-                st.rerun()
-        except KeyError:
-            st.error("❌ Erro: 'GEMINI_API_KEY' não encontrada nos Secrets.")
-else:
-    # --- NOVA TABELA ROBUSTA DE MACROTEMAS ---
-    O_total = len(dados_completos)
-    contagem_ori = Counter([d.get('orientador') for d in dados_completos if d.get('orientador')])
-    contagem_coori = Counter([co for d in dados_completos for co in d.get('co_orientadores', [])])
-    
-    linhas_tabela = []
-    macrotemas_unicos = set([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos])
-    
-    for mt in macrotemas_unicos:
-        docs_mt = [d for d in dados_completos if d.get('macrotema', 'Multidisciplinar / Transversal') == mt]
-        O_k = len(docs_mt)
-        
-        teses = sum(1 for d in docs_mt if 'Tese' in d.get('nivel_academico', ''))
-        dissertacoes = sum(1 for d in docs_mt if 'Disserta' in d.get('nivel_academico', ''))
-        
-        anos = [int(d['ano']) for d in docs_mt if d.get('ano') and str(d['ano']).isdigit()]
-        ano_antigo = min(anos) if anos else "-"
-        ano_recente = max(anos) if anos else "-"
-        ano_modal = Counter(anos).most_common(1)[0][0] if anos else "-"
-        
-        # Lógica interna para descobrir o Especialista via Quociente Locacional
-        def top_ql(entidades_na_mt, contagem_global):
-            max_ql = -1
-            top_ent = "-"
-            contagem_local = Counter(entidades_na_mt)
-            for ent, O_ik in contagem_local.items():
-                O_i = contagem_global.get(ent, 0)
-                if O_i > 0 and O_k > 0:
-                    ql = (O_ik / O_i) / (O_k / O_total)
-                    if ql > max_ql:
-                        max_ql = ql
-                        top_ent = ent
-                    elif ql == max_ql: # Desempate por volume bruto
-                        if O_ik > contagem_local.get(top_ent, 0): top_ent = ent
-            return top_ent, max_ql
+sna_global = calcular_sna_global(dados_completos)
 
-        oris_mt = [d.get('orientador') for d in docs_mt if d.get('orientador')]
-        top_ori, ql_ori = top_ql(oris_mt, contagem_ori)
-        
-        cooris_mt = [co for d in docs_mt for co in d.get('co_orientadores', [])]
-        top_coori, ql_coori = top_ql(cooris_mt, contagem_coori)
-        
-        mt_sna = sna_global.get(mt, {})
-        
-        linhas_tabela.append({
-            "Macrotema": mt,
-            "Docs": O_k,
-            "Teses": teses,
-            "Dissertações": dissertacoes,
-            "Grau": mt_sna.get('Grau Absoluto', 0),
-            "Betweenness": round(mt_sna.get('Betweenness', 0.0), 4),
-            "Closeness": round(mt_sna.get('Closeness', 0.0), 4),
-            "Especialista (Orientador)": f"{top_ori} (QL: {round(ql_ori,1)})" if top_ori != "-" else "-",
-            "Especialista (Co-orientador)": f"{top_coori} (QL: {round(ql_coori,1)})" if top_coori != "-" else "-",
-            "Início": ano_antigo,
-            "Pico Modal": ano_modal,
-            "Recente": ano_recente
-        })
-        
-    df_temas = pd.DataFrame(linhas_tabela).sort_values(by="Docs", ascending=False)
+# --- NOVA TABELA ROBUSTA DE MACROTEMAS ---
+O_total = len(dados_completos)
+contagem_ori = Counter([d.get('orientador') for d in dados_completos if d.get('orientador')])
+contagem_coori = Counter([co for d in dados_completos for co in d.get('co_orientadores', [])])
+
+linhas_tabela = []
+macrotemas_unicos = set([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos])
+
+for mt in macrotemas_unicos:
+    docs_mt = [d for d in dados_completos if d.get('macrotema', 'Multidisciplinar / Transversal') == mt]
+    O_k = len(docs_mt)
     
-    df_temas['Macrotema'] = df_temas['Macrotema'].astype('category')
+    teses = sum(1 for d in docs_mt if 'Tese' in d.get('nivel_academico', ''))
+    dissertacoes = sum(1 for d in docs_mt if 'Disserta' in d.get('nivel_academico', ''))
     
-    max_d = int(df_temas['Docs'].max()) if not df_temas.empty else 100
-    max_b = float(df_temas['Betweenness'].max()) if not df_temas.empty else 1.0
-    max_c = float(df_temas['Closeness'].max()) if not df_temas.empty else 1.0
-    max_g = int(df_temas['Grau'].max()) if not df_temas.empty else 100
+    anos = [int(d['ano']) for d in docs_mt if d.get('ano') and str(d['ano']).isdigit()]
+    ano_antigo = min(anos) if anos else "-"
+    ano_recente = max(anos) if anos else "-"
+    ano_modal = Counter(anos).most_common(1)[0][0] if anos else "-"
     
-    st.dataframe(
-        df_temas,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Docs": st.column_config.ProgressColumn("Docs", min_value=0, max_value=max_d, format="%d"),
-            "Teses": st.column_config.ProgressColumn("Teses", min_value=0, max_value=max_d, format="%d"),
-            "Dissertações": st.column_config.ProgressColumn("Dissertações", min_value=0, max_value=max_d, format="%d"),
-            "Grau": st.column_config.ProgressColumn("Grau", min_value=0, max_value=max_g, format="%d"),
-            "Betweenness": st.column_config.ProgressColumn("Betweenness", min_value=0, max_value=max_b, format="%.4f"),
-            "Closeness": st.column_config.ProgressColumn("Closeness", min_value=0, max_value=max_c, format="%.4f")
-        }
-    )
+    def top_ql(entidades_na_mt, contagem_global):
+        max_ql = -1
+        top_ent = "-"
+        contagem_local = Counter(entidades_na_mt)
+        for ent, O_ik in contagem_local.items():
+            O_i = contagem_global.get(ent, 0)
+            if O_i > 0 and O_k > 0:
+                ql = (O_ik / O_i) / (O_k / O_total)
+                if ql > max_ql:
+                    max_ql = ql
+                    top_ent = ent
+                elif ql == max_ql:
+                    if O_ik > contagem_local.get(top_ent, 0): top_ent = ent
+        return top_ent, max_ql
+
+    oris_mt = [d.get('orientador') for d in docs_mt if d.get('orientador')]
+    top_ori, ql_ori = top_ql(oris_mt, contagem_ori)
+    
+    cooris_mt = [co for d in docs_mt for co in d.get('co_orientadores', [])]
+    top_coori, ql_coori = top_ql(cooris_mt, contagem_coori)
+    
+    mt_sna = sna_global.get(mt, {})
+    
+    linhas_tabela.append({
+        "Macrotema": mt,
+        "Docs": O_k,
+        "Teses": teses,
+        "Dissertações": dissertacoes,
+        "Grau": mt_sna.get('Grau Absoluto', 0),
+        "Betweenness": round(mt_sna.get('Betweenness', 0.0), 4),
+        "Closeness": round(mt_sna.get('Closeness', 0.0), 4),
+        "Especialista (Orientador)": f"{top_ori} (QL: {round(ql_ori,1)})" if top_ori != "-" else "-",
+        "Especialista (Co-orientador)": f"{top_coori} (QL: {round(ql_coori,1)})" if top_coori != "-" else "-",
+        "Início": ano_antigo,
+        "Pico Modal": ano_modal,
+        "Recente": ano_recente
+    })
+    
+df_temas = pd.DataFrame(linhas_tabela).sort_values(by="Docs", ascending=False)
+st.dataframe(df_temas, use_container_width=True, hide_index=True)
+
+st.markdown("---")
+# A partir daqui, o código de "# --- MOTOR DE BUSCA (EGO-GRAPH) ---" continua exatamente igual.
 
 st.header("🗄️ Base de Dados Completa com Métricas SNA")
 

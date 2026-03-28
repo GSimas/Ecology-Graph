@@ -5,6 +5,7 @@ import networkx as nx
 import networkx.algorithms.community as nx_comm
 import pandas as pd
 import json
+import plotly.express as px
 import re
 import unicodedata
 from collections import Counter
@@ -178,7 +179,31 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
     resumo = resumo[['Entidade', 'Tipo', 'Teses', 'Dissertações', 'Total', 'QL (Especialização)']].sort_values(by=['Tipo', 'QL (Especialização)'], ascending=[True, False])
     
     st.write("**📊 Entidades conectadas a este Macrotema e Grau de Especialização (QL):**")
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    
+    resumo['Tipo'] = resumo['Tipo'].astype('category')
+    max_tot = int(resumo['Total'].max()) if not resumo.empty else 100
+    
+    def color_ql(val):
+        try:
+            v = float(val)
+            if v > 1: return 'color: #00FF00; font-weight: bold;'
+            elif v < 1: return 'color: #FF4B4B;'
+            return 'color: #F8E71C;'
+        except: return ''
+        
+    styler = resumo.style.map(color_ql, subset=['QL (Especialização)'])
+    
+    st.dataframe(
+        styler, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Total": st.column_config.ProgressColumn("Total", min_value=0, max_value=max_tot, format="%d"),
+            "Teses": st.column_config.ProgressColumn("Teses", min_value=0, max_value=max_tot, format="%d"),
+            "Dissertações": st.column_config.ProgressColumn("Dissertações", min_value=0, max_value=max_tot, format="%d"),
+            "QL (Especialização)": st.column_config.NumberColumn("QL (Especialização)", format="%.2f")
+        }
+    )
     st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -389,10 +414,54 @@ def gerar_tabela_macrotemas_perfil(docs, dados_totais):
     resumo = resumo[['Macrotema', 'Teses', 'Dissertações', 'Outros', 'Total', 'QL (Especialização)']].sort_values(by='QL (Especialização)', ascending=False)
     
     st.write("**📊 Frequência Temática e Especialização (QL):**")
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
+    
+    resumo['Macrotema'] = resumo['Macrotema'].astype('category')
+    max_tot = int(resumo['Total'].max()) if not resumo.empty else 100
+    
+    def color_ql2(val):
+        try:
+            v = float(val)
+            if v > 1: return 'color: #00FF00; font-weight: bold;'
+            elif v < 1: return 'color: #FF4B4B;'
+            return 'color: #F8E71C;'
+        except: return ''
+        
+    styler2 = resumo.style.map(color_ql2, subset=['QL (Especialização)'])
+    
+    st.dataframe(
+        styler2, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Total": st.column_config.ProgressColumn("Total", min_value=0, max_value=max_tot, format="%d"),
+            "Teses": st.column_config.ProgressColumn("Teses", min_value=0, max_value=max_tot, format="%d"),
+            "Dissertações": st.column_config.ProgressColumn("Dissertações", min_value=0, max_value=max_tot, format="%d"),
+            "QL (Especialização)": st.column_config.NumberColumn("QL (Especialização)", format="%.2f")
+        }
+    )
     st.caption("*Nota: QL > 1 indica que a entidade é estatisticamente especializada neste macrotema em relação à média geral da universidade.*")
     st.markdown("<br>", unsafe_allow_html=True)
 
+def renderizar_nuvem_interativa_html(word_freq_dict):
+    data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
+    </head>
+    <body style="margin:0; padding:0; background-color:transparent;">
+        <div id="main" style="width:100%; height:450px;"></div>
+        <script>
+            var chart = echarts.init(document.getElementById('main'));
+            var option = {{ tooltip: {{ show: true }}, series: [{{ type: 'wordCloud', shape: 'circle', sizeRange: [14, 70], textStyle: {{ fontFamily: 'sans-serif', fontWeight: 'bold', color: function () {{ return 'rgb(' + [Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100)].join(',') + ')'; }} }}, data: {data_js} }}] }};
+            chart.setOption(option);
+            window.onresize = chart.resize;
+        </script>
+    </body>
+    </html>
+    """
 
 # --- INTERFACE DE EXTRAÇÃO ---
 if 'dados_completos' not in st.session_state:
@@ -455,13 +524,257 @@ c5.metric("🏫 Orientadores", len(orientadores_set))
 c6.metric("🤝 Co-orientadores", len(coorientadores_set))
 c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 
-st.markdown("---")
-
-# --- MÓDULO DE MACROTEMAS ---
-st.header("🧠 Análise Temática Estrutural")
 
 # IMPORTANTE: Movemos o cálculo SNA para cá para alimentar a nova Super-Tabela
 sna_global = calcular_sna_global(dados_completos)
+
+# (Módulo de visualização de Macrotemas movido para a secção inferior)
+
+
+# --- MOTOR DE BUSCA (EGO-GRAPH) ---
+st.header("🔍 Motor de Busca e Dossiê")
+
+opcoes_busca = ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"]
+if st.session_state['macrotemas_computados']:
+    opcoes_busca.append("Macrotema")
+
+tipo_busca = st.radio("Procurar por Entidade:", opcoes_busca, horizontal=True, key="busca_tipo")
+
+if tipo_busca == "Documento": opcoes = [d['titulo'] for d in dados_completos]
+elif tipo_busca == "Autor": opcoes = list(autores_set)
+elif tipo_busca == "Orientador": opcoes = list(orientadores_set)
+elif tipo_busca == "Co-orientador": opcoes = list(coorientadores_set)
+elif tipo_busca == "Palavra-chave": opcoes = list(keywords_set)
+elif tipo_busca == "Macrotema": opcoes = list(set([d.get('macrotema') for d in dados_completos if d.get('macrotema')]))
+
+if st.session_state['busca_termo'] not in opcoes: st.session_state['busca_termo'] = None
+termo_selecionado = st.selectbox("Selecione:", sorted(opcoes), index=sorted(opcoes).index(st.session_state['busca_termo']) if st.session_state['busca_termo'] in opcoes else None, placeholder="Pesquise aqui...")
+
+if termo_selecionado != st.session_state['busca_termo']:
+    st.session_state['busca_termo'] = termo_selecionado
+    st.rerun()
+
+termo_ativo = st.session_state['busca_termo']
+
+if termo_ativo:
+    col_info, col_sna = st.columns([2, 1])
+    with col_info:
+        st.info(f"**{termo_ativo}**")
+        
+        if tipo_busca == "Documento":
+            doc = next((d for d in dados_completos if d['titulo'] == termo_ativo), {})
+            
+            st.write(f"**Ano:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')} | **Programa:** {doc.get('programa_origem', 'N/A')}")
+            
+            if doc.get('url'):
+                st.markdown(f"🔗 **Link Oficial na UFSC:** [{doc['url']}]({doc['url']})")
+                
+            if st.session_state['macrotemas_computados']:
+                tema = doc.get('macrotema', 'Multidisciplinar / Transversal')
+                st.write("**Macrotema Classificado:**")
+                st.button(f"🏷️ {tema}", on_click=navegar_para, args=("Macrotema", tema))
+                
+            st.write("**Rede de Autoria e Orientação:**")
+            for a in doc.get('autores', []): 
+                st.button(f"👤 {a}", on_click=navegar_para, args=("Autor", a))
+            if doc.get('orientador'): 
+                st.button(f"🏫 {doc['orientador']}", on_click=navegar_para, args=("Orientador", doc['orientador']))
+            for co in doc.get('co_orientadores', []):
+                st.button(f"🤝 {co}", on_click=navegar_para, args=("Co-orientador", co))
+                
+            st.write("**Palavras-chave:**")
+            for pk in doc.get('palavras_chave', []): 
+                st.button(f"💡 {pk}", on_click=navegar_para, args=("Palavra-chave", pk))
+                
+            with st.expander("Ler Resumo (Abstract)"): 
+                st.write(doc.get('resumo', 'Resumo não disponível.'))
+                
+        elif tipo_busca == "Autor":
+            docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
+            
+            orientadores = set()
+            co_orientadores = set()
+            for d in docs:
+                if d.get('orientador'):
+                    orientadores.add(d['orientador'])
+                for co in d.get('co_orientadores', []):
+                    co_orientadores.add(co)
+            
+            if orientadores or co_orientadores:
+                st.write("**👨‍🏫 Orientadores e Co-orientadores:**")
+                for ori in sorted(list(orientadores)):
+                    st.button(f"🏫 Orientador: {ori}", key=f"btn_ori_aut_{abs(hash(ori))}", on_click=navegar_para, args=("Orientador", ori))
+                for co in sorted(list(co_orientadores)):
+                    st.button(f"🤝 Co-orientador: {co}", key=f"btn_co_aut_{abs(hash(co))}", on_click=navegar_para, args=("Co-orientador", co))
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+
+            st.write(f"**Documentos Escritos ({len(docs)}):**")
+            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_aut_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
+            
+        elif tipo_busca in ["Orientador", "Co-orientador"]:
+            if tipo_busca == "Orientador":
+                docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
+            else:
+                docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+                
+            gerar_tabela_macrotemas_perfil(docs, dados_completos)
+            
+            alunos_orientados = set()
+            for d in docs:
+                for autor in d.get('autores', []):
+                    alunos_orientados.add(autor)
+            alunos_orientados = sorted(list(alunos_orientados))
+            
+            st.write(f"**🎓 Alunos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(alunos_orientados)}):**")
+            with st.expander(f"Ver lista de {len(alunos_orientados)} alunos"):
+                for i, aluno in enumerate(alunos_orientados):
+                    st.button(f"👤 {aluno}", key=f"btn_aluno_{tipo_busca}_{abs(hash(aluno))}_{i}", on_click=navegar_para, args=("Autor", aluno))
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            st.write(f"**Documentos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(docs)}):**")
+            
+            # Agrupar documentos do Orientador por Macrotema
+            from collections import defaultdict
+            docs_por_mt = defaultdict(list)
+            for d in docs:
+                docs_por_mt[d.get('macrotema', 'Multidisciplinar / Transversal')].append(d)
+                
+            with st.expander(f"📚 Ver lista de {len(docs)} documentos"):
+                for mt, docs_mt in docs_por_mt.items():
+                    st.markdown(f"**🏷️ {mt}**")
+                    for i, d in enumerate(docs_mt):
+                        # Chave criptográfica infalível usando hash do título inteiro
+                        chave_unica = f"btn_{tipo_busca}_{abs(hash(d['titulo']))}_{i}"
+                        st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
+            
+        elif tipo_busca == "Palavra-chave":
+            docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
+            gerar_tabela_macrotemas_perfil(docs, dados_completos)
+            
+            with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
+                for i, d in enumerate(docs): 
+                    chave_unica = f"btn_pk_{abs(hash(d['titulo']))}_{i}"
+                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
+            
+        elif tipo_busca == "Macrotema":
+            docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
+            gerar_tabela_entidades_por_macrotema(docs, dados_completos)
+            
+            with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
+                for i, d in enumerate(docs): 
+                    chave_unica = f"btn_mt_{abs(hash(d['titulo']))}_{i}"
+                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
+                    
+    with col_sna:
+        metricas = sna_global.get(termo_ativo, {})
+        if metricas:
+            st.success(f"Cluster: {metricas.get('Comunidade')} | Rank: #{metricas.get('Ranking Global')}")
+            st.metric("Grau (Conexões)", metricas.get('Grau Absoluto'))
+            st.metric("Betweenness", f"{metricas.get('Betweenness', 0):.4f}")
+            st.metric("Closeness", f"{metricas.get('Closeness', 0):.4f}") 
+            
+    if tipo_busca in ["Orientador", "Co-orientador", "Palavra-chave", "Macrotema"] and 'docs' in locals() and docs:
+        
+        titulo_secao = "Orientações" if tipo_busca in ["Orientador", "Co-orientador"] else "Documentos Associados"
+        st.markdown(f"### 📈 Evolução Histórica ({titulo_secao})")
+        
+        c_graf1, c_graf2, c_graf3 = st.columns(3)
+        agrupar_niveis = c_graf1.radio("Visão dos Níveis:", ["Separar Teses e Dissertações", "Agrupar tudo (Total)"], horizontal=True, key="agrup_niv_perfil")
+        modo_analise = c_graf2.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Macrotemas"], horizontal=True, key="modo_ana_perfil")
+        tipo_grafico = c_graf3.radio("Tipo de Gráfico:", ["Barras", "Linhas"], horizontal=True, key="tipo_graf_perfil")
+        
+        df_docs = pd.DataFrame(docs)
+        if not df_docs.empty and 'ano' in df_docs.columns:
+            df_docs['ano'] = pd.to_numeric(df_docs['ano'], errors='coerce')
+            df_docs = df_docs.dropna(subset=['ano'])
+            df_docs['ano'] = df_docs['ano'].astype(int)
+            
+            if not df_docs.empty:
+                if 'nivel_academico' not in df_docs.columns:
+                    df_docs['nivel_academico'] = 'Outros'
+                else:
+                    df_docs['nivel_academico'] = df_docs['nivel_academico'].fillna('Outros')
+                    
+                if 'macrotema' not in df_docs.columns:
+                    df_docs['macrotema'] = 'Multidisciplinar / Transversal'
+                else:
+                    df_docs['macrotema'] = df_docs['macrotema'].fillna('Multidisciplinar / Transversal')
+                
+                graf_func = px.bar if tipo_grafico == "Barras" else px.line
+                barmode_kw = dict(barmode='stack') if tipo_grafico == "Barras" else dict()
+                marker_kw = dict() if tipo_grafico == "Barras" else dict(markers=True)
+                
+                label_y = "Orientações" if tipo_busca in ["Orientador", "Co-orientador"] else "Documentos"
+                
+                if modo_analise == "Visão Geral (Volume)":
+                    if agrupar_niveis == "Agrupar tudo (Total)":
+                        df_plot = df_docs.groupby('ano').size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', title=f"{label_y} por Ano (Total)", template="plotly_dark", **marker_kw)
+                    else:
+                        df_plot = df_docs.groupby(['ano', 'nivel_academico']).size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', color='nivel_academico', title=f"{label_y} por Ano e Nível Acadêmico", template="plotly_dark", **barmode_kw, **marker_kw)
+                else:
+                    if agrupar_niveis == "Agrupar tudo (Total)":
+                        df_plot = df_docs.groupby(['ano', 'macrotema']).size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', color='macrotema', title=f"{label_y} por Ano e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw)
+                    else:
+                         df_docs['Nível/Tema'] = df_docs['nivel_academico'] + " - " + df_docs['macrotema']
+                         df_plot = df_docs.groupby(['ano', 'Nível/Tema']).size().reset_index(name='Volume')
+                         fig = graf_func(df_plot, x='ano', y='Volume', color='Nível/Tema', title=f"{label_y} por Ano, Nível e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw)
+                
+                fig.update_layout(xaxis_title="Ano", yaxis_title="Quantidade", xaxis=dict(tickmode='linear', dtick=1))
+                st.plotly_chart(fig, use_container_width=True)
+                
+        st.markdown(f"### ☁️ Nuvem de Palavras ({titulo_secao})")
+        modo_nuvem = st.selectbox("Fonte de Dados para Nuvem:", ["Tudo Combinado (Título + Resumo + Palavras-Chave)", "Apenas Palavras-chave", "Apenas Título", "Apenas Resumo"])
+        
+        texto_completo = []
+        for d in docs:
+            if "Resumo" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                texto_completo.append(d.get('resumo', ''))
+            if "Título" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                texto_completo.append(d.get('titulo', ''))
+            if "Palavras-chave" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                texto_completo.append(" ".join(d.get('palavras_chave', [])))
+                
+        texto_str = " ".join([str(t) for t in texto_completo]).lower()
+        texto_limpo = re.sub(r'[^\w\s]', '', texto_str)
+        
+        stopwords = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'by'])
+        
+        palavras_nuvem = [p for p in texto_limpo.split() if p not in stopwords and len(p) > 2]
+        if palavras_nuvem:
+            freq_dict = dict(Counter(palavras_nuvem).most_common(100))
+            html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
+            components.html(html_nuvem, height=480, scrolling=False)
+        else:
+            st.info("Palavras insuficientes para gerar a nuvem.")
+
+  
+    st.markdown("### 🌌 Órbita de Relacionamentos")
+    
+    col_orb1, col_orb2 = st.columns(2)
+    grau_expansao = col_orb1.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
+    metodo_tamanho_ego = col_orb2.selectbox("Tamanho dos Nós na Órbita:", ["Tamanho Fixo", "Grau Absoluto", "Degree Centrality", "Betweenness"])
+    
+    with st.spinner("A mapear o ecossistema local em 3D/2D..."):
+        nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao, metodo_tamanho_ego, sna_global)
+        
+        if nodes and edges:
+            config = Config(width="100%", height=600, directed=False, physics=True, hierarchical=False, nodeHighlightBehavior=True, highlightColor="#F1C40F", collapsible=False)
+            retorno_clique = agraph(nodes=nodes, edges=edges, config=config)
+            
+            if retorno_clique and retorno_clique != termo_ativo:
+                st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
+        else:
+            st.warning("Não foi possível gerar a órbita visual para este termo.")
+
+st.markdown("---")
+
+# --- MÓDULO DE MACROTEMAS (VISUALIZAÇÃO ESTRUTURAL) ---
+st.header("🧠 Análise Temática Estrutural")
 
 if not st.session_state['macrotemas_computados']:
     st.info("Os documentos extraídos ainda não possuem categorização temática.")
@@ -537,136 +850,70 @@ else:
         })
         
     df_temas = pd.DataFrame(linhas_tabela).sort_values(by="Docs", ascending=False)
-    st.dataframe(df_temas, use_container_width=True, hide_index=True)
-
-st.markdown("---")
-
-# --- MOTOR DE BUSCA (EGO-GRAPH) ---
-st.header("🔍 Motor de Busca e Dossiê")
-
-opcoes_busca = ["Documento", "Autor", "Orientador", "Co-orientador", "Palavra-chave"]
-if st.session_state['macrotemas_computados']:
-    opcoes_busca.append("Macrotema")
-
-tipo_busca = st.radio("Procurar por Entidade:", opcoes_busca, horizontal=True, key="busca_tipo")
-
-if tipo_busca == "Documento": opcoes = [d['titulo'] for d in dados_completos]
-elif tipo_busca == "Autor": opcoes = list(autores_set)
-elif tipo_busca == "Orientador": opcoes = list(orientadores_set)
-elif tipo_busca == "Co-orientador": opcoes = list(coorientadores_set)
-elif tipo_busca == "Palavra-chave": opcoes = list(keywords_set)
-elif tipo_busca == "Macrotema": opcoes = list(set([d.get('macrotema') for d in dados_completos if d.get('macrotema')]))
-
-if st.session_state['busca_termo'] not in opcoes: st.session_state['busca_termo'] = None
-termo_selecionado = st.selectbox("Selecione:", sorted(opcoes), index=sorted(opcoes).index(st.session_state['busca_termo']) if st.session_state['busca_termo'] in opcoes else None, placeholder="Pesquise aqui...")
-
-if termo_selecionado != st.session_state['busca_termo']:
-    st.session_state['busca_termo'] = termo_selecionado
-    st.rerun()
-
-termo_ativo = st.session_state['busca_termo']
-
-if termo_ativo:
-    col_info, col_sna = st.columns([2, 1])
-    with col_info:
-        st.info(f"**{termo_ativo}**")
-        
-        if tipo_busca == "Documento":
-            doc = next((d for d in dados_completos if d['titulo'] == termo_ativo), {})
-            
-            st.write(f"**Ano:** {doc.get('ano', 'N/A')} | **Nível:** {doc.get('nivel_academico', 'N/A')} | **Programa:** {doc.get('programa_origem', 'N/A')}")
-            
-            if doc.get('url'):
-                st.markdown(f"🔗 **Link Oficial na UFSC:** [{doc['url']}]({doc['url']})")
-                
-            if st.session_state['macrotemas_computados']:
-                tema = doc.get('macrotema', 'Multidisciplinar / Transversal')
-                st.write("**Macrotema Classificado:**")
-                st.button(f"🏷️ {tema}", on_click=navegar_para, args=("Macrotema", tema))
-                
-            st.write("**Rede de Autoria e Orientação:**")
-            for a in doc.get('autores', []): 
-                st.button(f"👤 {a}", on_click=navegar_para, args=("Autor", a))
-            if doc.get('orientador'): 
-                st.button(f"🏫 {doc['orientador']}", on_click=navegar_para, args=("Orientador", doc['orientador']))
-            for co in doc.get('co_orientadores', []):
-                st.button(f"🤝 {co}", on_click=navegar_para, args=("Co-orientador", co))
-                
-            st.write("**Palavras-chave:**")
-            for pk in doc.get('palavras_chave', []): 
-                st.button(f"💡 {pk}", on_click=navegar_para, args=("Palavra-chave", pk))
-                
-            with st.expander("Ler Resumo (Abstract)"): 
-                st.write(doc.get('resumo', 'Resumo não disponível.'))
-                
-        elif tipo_busca == "Autor":
-            docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
-            st.write(f"**Documentos Escritos ({len(docs)}):**")
-            for i, d in enumerate(docs): st.button(f"📄 {d['titulo']}", key=f"btn_aut_{i}", on_click=navegar_para, args=("Documento", d['titulo']))
-            
-        elif tipo_busca in ["Orientador", "Co-orientador"]:
-            if tipo_busca == "Orientador":
-                docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
-            else:
-                docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
-                
-            gerar_tabela_macrotemas_perfil(docs, dados_completos)
-            
-            st.write(f"**Documentos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(docs)}):**")
-            
-            # Agrupar documentos do Orientador por Macrotema
-            from collections import defaultdict
-            docs_por_mt = defaultdict(list)
-            for d in docs:
-                docs_por_mt[d.get('macrotema', 'Multidisciplinar / Transversal')].append(d)
-                
-            for mt, docs_mt in docs_por_mt.items():
-                st.markdown(f"**🏷️ {mt}**")
-                for i, d in enumerate(docs_mt):
-                    # Chave criptográfica infalível usando hash do título inteiro
-                    chave_unica = f"btn_{tipo_busca}_{abs(hash(d['titulo']))}_{i}"
-                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
-            
-        elif tipo_busca == "Palavra-chave":
-            docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
-            gerar_tabela_macrotemas_perfil(docs, dados_completos)
-            
-            with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
-                for i, d in enumerate(docs): 
-                    chave_unica = f"btn_pk_{abs(hash(d['titulo']))}_{i}"
-                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
-            
-        elif tipo_busca == "Macrotema":
-            docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
-            gerar_tabela_entidades_por_macrotema(docs, dados_completos)
-            
-            with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
-                for i, d in enumerate(docs): 
-                    chave_unica = f"btn_mt_{abs(hash(d['titulo']))}_{i}"
-                    st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
-                    
-    with col_sna:
-        metricas = sna_global.get(termo_ativo, {})
-        if metricas:
-            st.success(f"Cluster: {metricas.get('Comunidade')} | Rank: #{metricas.get('Ranking Global')}")
-            st.metric("Grau (Conexões)", metricas.get('Grau Absoluto'))
-            st.metric("Betweenness", f"{metricas.get('Betweenness', 0):.4f}")
-            st.metric("Closeness", f"{metricas.get('Closeness', 0):.4f}") 
-            
-    st.markdown("### 🌌 Órbita de Relacionamentos")
     
-    col_orb1, col_orb2 = st.columns(2)
-    grau_expansao = col_orb1.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
-    metodo_tamanho_ego = col_orb2.selectbox("Tamanho dos Nós na Órbita:", ["Tamanho Fixo", "Grau Absoluto", "Degree Centrality", "Betweenness"])
+    df_temas['Macrotema'] = df_temas['Macrotema'].astype('category')
     
-    with st.spinner("A mapear o ecossistema local em 3D/2D..."):
-        nodes, edges = gerar_nodos_agraph(dados_completos, termo_ativo, grau_expansao, metodo_tamanho_ego, sna_global)
-        
-        if nodes and edges:
-            config = Config(width="100%", height=600, directed=False, physics=True, hierarchical=False, nodeHighlightBehavior=True, highlightColor="#F1C40F", collapsible=False)
-            retorno_clique = agraph(nodes=nodes, edges=edges, config=config)
-            
-            if retorno_clique and retorno_clique != termo_ativo:
-                st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
-        else:
-            st.warning("Não foi possível gerar a órbita visual para este termo.")
+    max_d = int(df_temas['Docs'].max()) if not df_temas.empty else 100
+    max_b = float(df_temas['Betweenness'].max()) if not df_temas.empty else 1.0
+    max_c = float(df_temas['Closeness'].max()) if not df_temas.empty else 1.0
+    max_g = int(df_temas['Grau'].max()) if not df_temas.empty else 100
+    
+    st.dataframe(
+        df_temas,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Docs": st.column_config.ProgressColumn("Docs", min_value=0, max_value=max_d, format="%d"),
+            "Teses": st.column_config.ProgressColumn("Teses", min_value=0, max_value=max_d, format="%d"),
+            "Dissertações": st.column_config.ProgressColumn("Dissertações", min_value=0, max_value=max_d, format="%d"),
+            "Grau": st.column_config.ProgressColumn("Grau", min_value=0, max_value=max_g, format="%d"),
+            "Betweenness": st.column_config.ProgressColumn("Betweenness", min_value=0, max_value=max_b, format="%.4f"),
+            "Closeness": st.column_config.ProgressColumn("Closeness", min_value=0, max_value=max_c, format="%.4f")
+        }
+    )
+
+st.header("🗄️ Base de Dados Completa com Métricas SNA")
+
+base_expandida = []
+for d in dados_completos:
+    row = d.copy()
+    titulo = row.get('titulo')
+    
+    if isinstance(row.get('autores'), list): row['autores'] = ", ".join(row['autores'])
+    if isinstance(row.get('co_orientadores'), list): row['co_orientadores'] = ", ".join(row['co_orientadores'])
+    if isinstance(row.get('palavras_chave'), list): row['palavras_chave'] = ", ".join(row['palavras_chave'])
+    
+    metricas_doc = sna_global.get(titulo, {})
+    row['Grau (SNA)'] = metricas_doc.get('Grau Absoluto', 0)
+    row['Betweenness (SNA)'] = round(metricas_doc.get('Betweenness', 0.0), 4)
+    row['Closeness (SNA)'] = round(metricas_doc.get('Closeness', 0.0), 4)
+    row['Comunidade (SNA)'] = metricas_doc.get('Comunidade', 'N/A')
+    row['Ranking Global (SNA)'] = metricas_doc.get('Ranking Global', 'N/A')
+    
+    base_expandida.append(row)
+
+df_base_completa = pd.DataFrame(base_expandida)
+colunas_principais = ['titulo', 'ano', 'nivel_academico', 'autores', 'orientador', 'co_orientadores', 'palavras_chave', 'macrotema', 'Grau (SNA)', 'Betweenness (SNA)', 'Closeness (SNA)', 'Comunidade (SNA)', 'Ranking Global (SNA)', 'resumo', 'url']
+colunas_finais = [c for c in colunas_principais if c in df_base_completa.columns] + [c for c in df_base_completa.columns if c not in colunas_principais]
+
+max_g = int(df_base_completa['Grau (SNA)'].max()) if not df_base_completa.empty else 100
+max_b = float(df_base_completa['Betweenness (SNA)'].max()) if not df_base_completa.empty else 1.0
+max_c = float(df_base_completa['Closeness (SNA)'].max()) if not df_base_completa.empty else 1.0
+
+df_base_completa['nivel_academico'] = df_base_completa['nivel_academico'].astype('category')
+
+if 'macrotema' in df_base_completa.columns:
+    df_base_completa['macrotema'] = df_base_completa['macrotema'].astype('category')
+if 'Comunidade (SNA)' in df_base_completa.columns:
+    df_base_completa['Comunidade (SNA)'] = df_base_completa['Comunidade (SNA)'].astype('category')
+
+st.dataframe(
+    df_base_completa[colunas_finais],
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Grau (SNA)": st.column_config.ProgressColumn("Grau (SNA)", min_value=0, max_value=max_g, format="%d"),
+        "Betweenness (SNA)": st.column_config.ProgressColumn("Betweenness (SNA)", min_value=0, max_value=max_b, format="%.4f"),
+        "Closeness (SNA)": st.column_config.ProgressColumn("Closeness (SNA)", min_value=0, max_value=max_c, format="%.4f")
+    }
+)

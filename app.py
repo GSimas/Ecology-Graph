@@ -341,7 +341,7 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
             with st.spinner("Lendo a base consolidada e filtrando os PPGs selecionados. Isso levará apenas alguns segundos..."):
                 try:
                     # O arquivo pesado de +100MB só é lido AQUI, após o clique
-                    with open('base_consolidada_ufsc.json.gz', 'r', encoding='utf-8') as f:
+                    with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
                         base_total = json.load(f)
                         
                     # Filtra mantendo apenas os programas escolhidos

@@ -6,6 +6,7 @@ import networkx as nx
 from pyvis.network import Network
 import json
 import streamlit.components.v1 as components
+import numpy as np
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -147,13 +148,82 @@ def preparar_sankey(dados_lista, top_n=10):
     mapping = {name: i for i, name in enumerate(nodes)}
     return nodes, df_fluxos['src'].map(mapping), df_fluxos['tgt'].map(mapping), df_fluxos['val']
 
+
+# --- LÓGICA 5: MÉTRICAS MEMÉTICAS (Atualizado com NLP e Padronização) ---
+@st.cache_data
+def calcular_metricas_memeticas(df_base):
+    import re
+    import unicodedata # Importação nativa do Python para tratamento de caracteres
+    
+    if df_base.empty: 
+        return pd.DataFrame(), pd.DataFrame(), 0, 0, pd.DataFrame(), pd.DataFrame()
+
+    # Dicionário de palavras vazias para limpar os títulos
+    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+
+    def remover_acentos(texto):
+        """Remove todos os acentos e marcadores diacríticos do texto."""
+        if not isinstance(texto, str): return ""
+        return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+    # Normalizamos as stopwords também para que o "match" seja perfeito com os textos limpos
+    stopwords_norm = {remover_acentos(w) for w in stopwords}
+
+    def extrair_memes_completos(row):
+        # 1. Pega as palavras-chave oficiais, passa para minúscula, remove acentos e espaços extras
+        pks = row.get('palavras_chave', [])
+        if not isinstance(pks, list):
+            pks = [pks] if pd.notna(pks) else []
+        memes = set([remover_acentos(str(p).lower().strip()) for p in pks if str(p).strip()])
+        
+        # 2. Pega as palavras do Título (limpo de acentos, mínimo de 3 letras e sem stopwords)
+        titulo_norm = remover_acentos(str(row.get('titulo', '')).lower())
+        
+        # Como removemos os acentos no passo anterior, a regex [a-z] agora é suficiente e à prova de falhas
+        palavras_titulo = re.findall(r'\b[a-z]{3,}\b', titulo_norm)
+        memes.update([p for p in palavras_titulo if p not in stopwords_norm])
+        
+        return list(memes)
+
+    # Aplica o extrator de DNA
+    df_copy = df_base.copy()
+    df_copy['memes_todos'] = df_copy.apply(extrair_memes_completos, axis=1)
+    
+    # Explode para ter uma linha por meme
+    df_explodido = df_copy.explode('memes_todos')
+    df_explodido = df_explodido[df_explodido['memes_todos'].notna()]
+    df_explodido = df_explodido[df_explodido['memes_todos'].str.strip() != '']
+    df_explodido['meme'] = df_explodido['memes_todos']
+
+    # 1. FECUNDIDADE: Em quantos documentos diferentes o meme conseguiu entrar?
+    fecundidade = df_explodido.groupby('meme')['titulo'].nunique().reset_index(name='fecundidade')
+    
+    # Separação das Populações (Mortos vs Vivos)
+    df_mortos = fecundidade[fecundidade['fecundidade'] == 1][['meme']].rename(columns={'meme': 'Memes Mortos (1 Aparição)'})
+    df_vivos = fecundidade[fecundidade['fecundidade'] > 1].sort_values('fecundidade', ascending=False).rename(columns={'meme': 'Memes Sobreviventes', 'fecundidade': 'Nº de Aparições'})
+
+    mortalidade_count = len(df_mortos)
+    sobreviventes_count = len(df_vivos)
+
+    # 3. LONGEVIDADE (Meia-Vida baseada em Títulos e Keywords)
+    longevidade = df_explodido.groupby('meme').agg(
+        ano_nascimento=('Ano', 'min'),
+        ano_extincao=('Ano', 'max'),
+        total_aparicoes=('titulo', 'nunique')
+    ).reset_index()
+    
+    longevidade['tempo_vida_anos'] = longevidade['ano_extincao'] - longevidade['ano_nascimento']
+    longevidade_valida = longevidade[longevidade['total_aparicoes'] > 1].copy()
+
+    return fecundidade, longevidade_valida, mortalidade_count, sobreviventes_count, df_mortos, df_vivos
+    
 # --- INTERFACE ---
 
 st.title(f"🧪 Ecologia do Conhecimento: Análises Profundas")
 st.subheader(f"Explorando o DNA de: {nome_programa}")
 df_geral = preparar_dataframe(dados_gerais)
 
-tab1, tab2, tab3, tab4 = st.tabs(["🔥 Burst", "🌳 Genealogia", "🕳️ Furos (Burt)", "🌊 Fluxos (Sankey)"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 Burst", "🌳 Genealogia", "🕳️ Furos (Burt)", "🌊 Fluxos (Sankey)", "🧬 Memética"])
 
 with tab1:
     st.markdown("### Deteção de Explosões (Emergências)")
@@ -193,3 +263,97 @@ with tab4:
         fig.update_layout(template="plotly_dark", height=700)
         st.plotly_chart(fig, use_container_width=True)
     else: st.warning("Não há vínculos suficientes entre orientadores e conceitos.")
+
+with tab5:
+    st.markdown("### A Genética das Ideias (Teoria Memética)")
+    st.write("Análise do ciclo de vida dos conceitos como entidades replicantes (memes) extraídos das palavras-chave e dos títulos das teses.")
+    
+    df_fecundidade, df_longevidade, mortos, vivos, df_mortos, df_vivos = calcular_metricas_memeticas(df_geral)
+    
+    if df_fecundidade.empty:
+        st.warning("Dados insuficientes para calcular métricas meméticas.")
+    else:
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown("#### Fecundidade vs. Mortalidade Infantil")
+            st.caption("Memes que falharam em se replicar vs. Memes que sobreviveram.")
+            
+            fig_mortalidade = go.Figure(data=[go.Pie(
+                labels=['Memes Mortos (1 aparição)', 'Memes Sobreviventes (>1 aparição)'],
+                values=[mortos, vivos],
+                hole=.6,
+                marker_colors=['#E74C3C', '#2ECC71']
+            )])
+            fig_mortalidade.update_layout(
+                template="plotly_dark", 
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+                margin=dict(t=20, b=20, l=20, r=20)
+            )
+            st.plotly_chart(fig_mortalidade, use_container_width=True)
+            
+            # NOVO: Tabelas de inspeção de memes
+            with st.expander("👁️ Ver Catálogo de Memes (Vivos vs Mortos)", expanded=False):
+                st.write("**🟢 Memes Sobreviventes (Top Fecundidade)**")
+                st.dataframe(df_vivos, use_container_width=True, hide_index=True, height=250)
+                
+                st.write("**🔴 Memes Mortos (Cemitério de Ideias)**")
+                # Mostramos uma amostra aleatória se houver muitos mortos para não travar a UI
+                amostra_mortos = df_mortos.sample(min(100, len(df_mortos))) if len(df_mortos) > 0 else df_mortos
+                st.dataframe(amostra_mortos, use_container_width=True, hide_index=True, height=250)
+            
+        with col2:
+            st.markdown("#### Os Super-Memes (Maior Fecundidade)")
+            st.caption("Conceitos com maior capacidade de replicação (espalhamento) na história do programa.")
+            
+            # Pega os 15 mais fecundos para o gráfico
+            top_fecundos = df_vivos.head(15).rename(columns={'Memes Sobreviventes': 'meme', 'Nº de Aparições': 'fecundidade'})
+            
+            fig_fecundidade = px.bar(
+                top_fecundos, 
+                x='fecundidade', 
+                y='meme', 
+                orientation='h',
+                color='fecundidade',
+                color_continuous_scale='Viridis'
+            )
+            fig_fecundidade.update_layout(
+                template="plotly_dark", 
+                yaxis={'categoryorder':'total ascending'},
+                xaxis_title="Nº de Teses/Dissertações Diferentes",
+                yaxis_title="",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_fecundidade, use_container_width=True)
+
+        st.markdown("---")
+        
+        st.markdown("#### Tempo de Meia-Vida do Conhecimento (Longevidade)")
+        st.caption("Analisa a 'idade' dos conceitos considerando sua presença em Títulos e Palavras-chave. Memes com vida longa indicam pilares estruturais; memes recentes podem ser a vanguarda tecnológica.")
+        
+        min_aparicoes_long = st.slider("Filtrar por nº mínimo de replicações (para ver apenas memes consistentes):", min_value=2, max_value=50, value=5)
+        
+        df_long_filtrado = df_longevidade[df_longevidade['total_aparicoes'] >= min_aparicoes_long].copy()
+        
+        if not df_long_filtrado.empty:
+            fig_longevidade = px.scatter(
+                df_long_filtrado, 
+                x="ano_nascimento", 
+                y="tempo_vida_anos", 
+                size="total_aparicoes", 
+                color="ano_extincao",
+                hover_name="meme",
+                color_continuous_scale='Plasma',
+                labels={
+                    "ano_nascimento": "Ano de Nascimento (1ª Aparição)",
+                    "tempo_vida_anos": "Longevidade (Anos de Sobrevivência)",
+                    "total_aparicoes": "Total de Réplicas (Fecundidade)",
+                    "ano_extincao": "Ano da Última Aparição",
+                    "meme": "Meme Acadêmico"
+                }
+            )
+            fig_longevidade.update_layout(template="plotly_dark", height=500)
+            st.plotly_chart(fig_longevidade, use_container_width=True)
+        else:
+            st.info("Nenhum meme encontrado com essa taxa de replicação mínima. Reduza o filtro acima.")

@@ -198,12 +198,15 @@ def gerar_nodos_agraph(dados_recorte, termo_foco, grau_separacao=1, metodo_taman
         cor = '#FFFFFF' if node == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Palavra-chave' else '#9B59B6' if tipo == 'Macrotema' else '#95A5A6')
         formato = 'diamond' if node == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Palavra-chave' else 'hexagon' if tipo == 'Macrotema' else 'dot')
         
+        # Super-contraste: Texto escuro com borda branca espessa garante leitura perfeita em qualquer tema (Dark/Light)
+        fonte_alto_contraste = {'color': '#111111', 'strokeWidth': 4, 'strokeColor': '#FFFFFF', 'face': 'sans-serif'}
+        
         hover = f"Tipo: {tipo}\nGrau Local: {graus_locais[node]}"
         if _sna_global and node in _sna_global:
             hover += f"\nBetweenness Global: {_sna_global[node].get('Betweenness', 0):.4f}"
         
         rotulo = node[:25] + "..." if len(node) > 25 and tipo == 'Documento' else node
-        nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, title=f"{node}\n{hover}", shape=formato))
+        nodes.append(Node(id=node, label=rotulo, size=tam, color=cor, title=f"{node}\n{hover}", shape=formato, font=fonte_alto_contraste))
 
     for u, v in ego_G.edges():
         edges.append(Edge(source=u, target=v, color="#7F8C8D", width=1.0))

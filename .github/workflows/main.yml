@@ -1,0 +1,38 @@
+name: Minerador Semanal UFSC
+
+# Define quando o robô vai acordar
+on:
+  schedule:
+    # Roda todo domingo às 03:00 da manhã (horário do servidor)
+    - cron: '0 3 * * 0'
+  workflow_dispatch: # Permite que você aperte um botão no GitHub para rodar manualmente
+
+jobs:
+  atualizar_dados:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar bibliotecas
+        run: |
+          pip install -r requirements.txt
+
+      - name: Rodar o Pipeline de Extração e IA
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_GITHUB }} # Puxa a chave do GitHub
+        run: python pipeline_ufsc.py
+
+      - name: Salvar o novo JSON no repositório (Commit automático)
+        run: |
+          git config --global user.name "Robô Ecologia UFSC"
+          git config --global user.email "robo@ufsc.br"
+          git add base_consolidada_ufsc.json
+          # Só faz o commit se houver mudanças nos dados
+          git diff --quiet && git diff --staged --quiet || git commit -m "⚙️ Atualização automática da base de teses e macrotemas"
+          git push

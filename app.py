@@ -10,6 +10,9 @@ import re
 import unicodedata
 from collections import Counter
 import gzip
+import google.generativeai as genai
+import requests
+import urllib.parse
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
@@ -305,6 +308,86 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
     </html>
     """
 
+
+# --- MOTOR DE SÍNTESE SOB DEMANDA (APP) ---
+@st.cache_data(show_spinner=False)
+def gerar_descritivo_sessao(nomes_programas, amostra_textos, api_key):
+    """Gera o descritivo na hora e salva em cache para economizar requisições."""
+    genai.configure(api_key=api_key)
+    try: model = genai.GenerativeModel('gemini-2.5-flash')
+    except Exception: model = genai.GenerativeModel('gemini-2.0-flash')
+
+    nomes_str = ", ".join(nomes_programas)
+    prompt = f"""Você é um analista sênior de avaliação acadêmica.
+Sua missão é criar um parágrafo descritivo e direto (máximo de 60 palavras) apresentando o perfil de pesquisa e o ecossistema do(s) seguinte(s) programa(s): {nomes_str}.
+
+Utilize a amostra de teses/conceitos abaixo como base:
+---
+{amostra_textos}
+---
+
+Diretrizes rigorosas:
+- Comece direto com a descrição.
+- Sintetize os grandes domínios de conhecimento baseando-se nos documentos e no seu conhecimento prévio.
+- NÃO repita o nome do(s) programa(s) no texto.
+- Retorne APENAS o parágrafo limpo.
+"""
+    try:
+        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0.3))
+        return response.text.strip().replace('**', '').replace('"', '')
+    except Exception as e:
+        return f"Não foi possível gerar a síntese dinâmica no momento. (Aviso: {e})"
+
+
+
+
+import requests
+
+# --- MOTOR DE CONSULTA À CAPES SUCUPIRA ---
+@st.cache_data(show_spinner=False, ttl=86400) # Mantém em cache por 24 horas
+def carregar_catalogo_capes_ufsc():
+    """Baixa todos os programas da UFSC de uma vez e cria um dicionário para busca instantânea."""
+    url = "https://apigw-proxy.capes.gov.br/observatorio/data/observatorio/ppg"
+    headers = {"Accept": "application/json"}
+    programas_capes = {}
+    page = 0
+    
+    while True:
+        parametros = {"query": "id-ies:(4362)", "page": page, "size": 100}
+        try:
+            resposta = requests.get(url, params=parametros, headers=headers, timeout=10)
+            if resposta.status_code != 200: break
+            
+            dados = resposta.json()
+            resultados = dados if isinstance(dados, list) else dados.get('content', dados.get('data', []))
+            if not resultados: break
+            
+            for ppg in resultados:
+                nome_capes = ppg.get("nome", "").strip().upper()
+                # Remove acentos para facilitar o match cruzado
+                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', nome_capes) if unicodedata.category(c) != 'Mn')
+                
+                programas_capes[nome_norm] = {
+                    "Nome": ppg.get("nome", "Não informado"),
+                    "Código": ppg.get("codigo", "Não informado"),
+                    "Nota": ppg.get("conceito", "Não informado"),
+                    "Grande Área": ppg.get("nomeGrandeAreaConhecimento", "Não informado"),
+                    "Área de Avaliação": ppg.get("nomeAreaAvaliacao", "Não informado"),
+                    "Área de Conhecimento": ppg.get("nomeAreaConhecimento", "Não informado"),
+                    "Modalidade": ppg.get("modalidade", "Não informado"),
+                    "Situação": ppg.get("situacao", "Não informado"),
+                    "Modalidade de Ensino": ppg.get("nomeModalidadeEnsino", "Não informado"),
+                    "Grau Acadêmico": ppg.get("grau", "Não informado")
+                }
+            
+            if len(resultados) < 100: break
+            page += 1
+        except Exception:
+            break
+            
+    return programas_capes
+
+
 # --- CARREGAMENTO E SELEÇÃO DA BASE CONSOLIDADA ---
 @st.cache_data
 def carregar_base_consolidada():
@@ -353,7 +436,8 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
                         
                     # Salva na sessão e destrava o aplicativo
                     st.session_state['dados_completos'] = dados_filtrados
-                    st.session_state['nome_programa'] = f"{len(programas_selecionados)} PPG(s) Selecionado(s)"
+                    st.session_state['programas_selecionados_lista'] = programas_selecionados
+                    st.session_state['nome_programa'] = f"{len(programas_selecionados)} PPG(s) Selecionado(s): {', '.join(programas_selecionados)}"
                     st.session_state['macrotemas_computados'] = True
                     st.session_state['recarregar'] = False
                     st.rerun()
@@ -377,11 +461,6 @@ if st.sidebar.button("🔄 Escolher outros PPGs", type="primary"):
     st.session_state['recarregar'] = True
     st.rerun()
 
-# Botão (opcional) para forçar leitura de um novo JSON gerado pelo pipeline
-if st.sidebar.button("📥 Atualizar Cache do JSON"):
-    carregar_base_consolidada.clear()
-    st.session_state['recarregar'] = True
-    st.rerun()
 
 # KPIs Básicos
 autores_set = set([a for d in dados_completos for a in d.get('autores', [])])
@@ -399,6 +478,150 @@ c4.metric("✍️ Autores Únicos", len(autores_set))
 c5.metric("🏫 Orientadores", len(orientadores_set))
 c6.metric("🤝 Co-orientadores", len(coorientadores_set))
 c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
+
+
+# --- APRESENTAÇÃO DO PERFIL DINÂMICO ---
+
+try:
+    api_key_app = st.secrets["GEMINI_API_KEY"]
+    
+    # Extrai até 25 documentos espaçados uniformemente para criar uma amostra representativa
+    amostra_docs = []
+    salto = max(1, len(dados_completos) // 25)
+    for i in range(0, len(dados_completos), salto):
+        d = dados_completos[i]
+        amostra_docs.append(f"- {d.get('titulo', '')} | {', '.join(d.get('palavras_chave', []))}")
+        if len(amostra_docs) >= 25: break
+            
+    nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
+    
+        
+except KeyError:
+    st.warning("🔑 Chave da API do Gemini não configurada nos secrets locais. O perfil dinâmico está desativado.")
+st.markdown("<br>", unsafe_allow_html=True)
+
+
+
+if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
+    st.markdown("---")
+    st.subheader("📊 Comparativo entre PPGs")
+    
+    comparativo_data = []
+    
+    from collections import defaultdict
+    dados_por_ppg = defaultdict(list)
+    for d in dados_completos:
+        ppg = d.get('programa_origem', 'Desconhecido')
+        dados_por_ppg[ppg].append(d)
+        
+    for ppg, docs_ppg in dados_por_ppg.items():
+        comparativo_data.append({
+            "PPG": ppg,
+            "📄 Documentos Totais": len(docs_ppg),
+            "🎓 Teses (Doutorado)": len([d for d in docs_ppg if "Tese" in d.get('nivel_academico', '')]),
+            "📜 Dissertações": len([d for d in docs_ppg if "Disserta" in d.get('nivel_academico', '')]),
+            "✍️ Autores Únicos": len(set([a for d in docs_ppg for a in d.get('autores', [])])),
+            "🏫 Orientadores": len(set([d.get('orientador') for d in docs_ppg if d.get('orientador')])),
+            "🤝 Co-orientadores": len(set([co for d in docs_ppg for co in d.get('co_orientadores', [])])),
+            "💡 Conceitos (Keywords)": len(set([kw for d in docs_ppg for kw in d.get('palavras_chave', [])]))
+        })
+        
+    df_comp = pd.DataFrame(comparativo_data)
+    df_melted = df_comp.melt(id_vars="PPG", var_name="Métrica", value_name="Quantidade")
+    
+    fig_comp = px.bar(
+        df_melted, 
+        x="PPG", 
+        y="Quantidade", 
+        color="PPG", 
+        facet_col="Métrica", 
+        facet_col_wrap=4, 
+        template="plotly_dark", 
+        text="Quantidade",
+        height=650
+    )
+    fig_comp.update_yaxes(matches=None, showticklabels=False, title="") 
+    fig_comp.update_xaxes(showticklabels=False, title="")
+    fig_comp.update_traces(textposition='outside')
+    fig_comp.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    
+    st.plotly_chart(fig_comp, use_container_width=True)
+
+
+# --- APRESENTAÇÃO DO PERFIL E DADOS OFICIAIS ---
+st.markdown("#### 🏛️ Ficha Técnica e Perfil Institucional")
+
+nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
+
+# Puxa o dicionário completo da CAPES da memória (Instantâneo)
+catalogo_capes = carregar_catalogo_capes_ufsc()
+
+for nome_ppg in nomes_ppgs:
+    # 1. Limpeza agressiva do nome do repositório
+    nome_limpo = nome_ppg.replace("Programa de Pós-Graduação em ", "").replace("Programa de Pós-Graduação ", "").replace("PPG em ", "").strip().upper()
+    nome_norm_busca = ''.join(c for c in unicodedata.normalize('NFD', nome_limpo) if unicodedata.category(c) != 'Mn')
+    
+    # 2. Tenta encontrar correspondência exata primeiro (o mais rápido)
+    dados_capes = catalogo_capes.get(nome_norm_busca)
+    
+    # 3. Inteligência de Strings (Fuzzy Matching) para lidar com variações da UFSC/CAPES
+    if not dados_capes:
+        import difflib # Biblioteca nativa do Python para cálculo de similaridade
+        
+        chaves_disponiveis = list(catalogo_capes.keys())
+        # Procura a chave mais parecida com pelo menos 65% de similaridade estrutural
+        melhores_matches = difflib.get_close_matches(nome_norm_busca, chaves_disponiveis, n=1, cutoff=0.65)
+        
+        if melhores_matches:
+            dados_capes = catalogo_capes[melhores_matches[0]]
+        else:
+            # 4. Fallback Final: Interseção de Palavras-Chave (Ignorando preposições curtas)
+            palavras_busca = set([p for p in nome_norm_busca.split() if len(p) > 2])
+            for key_capes, dados in catalogo_capes.items():
+                palavras_capes = set([p for p in key_capes.split() if len(p) > 2])
+                
+                # Se houver um cruzamento muito forte das palavras principais (ex: ENGENHARIA, GESTAO, CONHECIMENTO)
+                if len(palavras_busca.intersection(palavras_capes)) >= max(1, len(palavras_busca) - 1):
+                    dados_capes = dados
+                    break
+
+    # 5. Desenha o Cartão Oficial da CAPES
+    if dados_capes:
+        st.markdown(f"**{dados_capes['Nome']} ({dados_capes['Código']}) | Nota CAPES: {dados_capes['Nota']}**")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Grande Área:** {dados_capes['Grande Área']}")
+            st.write(f"**Área de Avaliação:** {dados_capes['Área de Avaliação']}")
+            st.write(f"**Área de Conhecimento:** {dados_capes['Área de Conhecimento']}")
+        with col2:
+            st.write(f"**Modalidade:** {dados_capes['Modalidade']} ({dados_capes['Grau Acadêmico']})")
+            st.write(f"**Situação:** {dados_capes['Situação']}")
+            st.write(f"**Ensino:** {dados_capes['Modalidade de Ensino']}")
+    else:
+        st.markdown(f"**{nome_ppg}**")
+        st.caption("⚠️ Dados oficiais não localizados na base da CAPES (Possível variação de nomenclatura institucional).")
+        
+st.markdown("<br>", unsafe_allow_html=True)
+
+# 4. Descritivo Dinâmico da IA (A Alma do Programa)
+try:
+    api_key_app = st.secrets["GEMINI_API_KEY"]
+    
+    amostra_docs = []
+    salto = max(1, len(dados_completos) // 25)
+    for i in range(0, len(dados_completos), salto):
+        d = dados_completos[i]
+        amostra_docs.append(f"- {d.get('titulo', '')} | {', '.join(d.get('palavras_chave', []))}")
+        if len(amostra_docs) >= 25: break
+            
+    with st.spinner("A IA está analisando a amostra de documentos para sintetizar o perfil epistemológico..."):
+        descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
+        st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
+        
+except KeyError:
+    st.warning("🔑 Chave da API do Gemini não configurada nos secrets locais.")
+st.markdown("---")
 
 
 # IMPORTANTE: Movemos o cálculo SNA para cá para alimentar a nova Super-Tabela
@@ -468,6 +691,10 @@ if termo_ativo:
         elif tipo_busca == "Autor":
             docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
             
+            programas = sorted(list(set([d.get('programa_origem') for d in docs if d.get('programa_origem')])))
+            if programas:
+                st.write(f"**🏛️ Programas (PPG):** {', '.join(programas)}")
+            
             orientadores = set()
             co_orientadores = set()
             for d in docs:
@@ -493,6 +720,10 @@ if termo_ativo:
                 docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
             else:
                 docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+                
+            programas = sorted(list(set([d.get('programa_origem') for d in docs if d.get('programa_origem')])))
+            if programas:
+                st.write(f"**🏛️ Programas (PPG):** {', '.join(programas)}")
                 
             gerar_tabela_macrotemas_perfil(docs, dados_completos)
             
@@ -556,10 +787,15 @@ if termo_ativo:
         titulo_secao = "Orientações" if tipo_busca in ["Orientador", "Co-orientador"] else "Documentos Associados"
         st.markdown(f"### 📈 Evolução Histórica ({titulo_secao})")
         
-        c_graf1, c_graf2, c_graf3 = st.columns(3)
-        agrupar_niveis = c_graf1.radio("Visão dos Níveis:", ["Separar Teses e Dissertações", "Agrupar tudo (Total)"], horizontal=True, key="agrup_niv_perfil")
-        modo_analise = c_graf2.radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Macrotemas"], horizontal=True, key="modo_ana_perfil")
-        tipo_grafico = c_graf3.radio("Tipo de Gráfico:", ["Barras", "Linhas"], horizontal=True, key="tipo_graf_perfil")
+        tem_multiplos_ppgs = len(st.session_state.get('programas_selecionados_lista', [])) > 1
+        cols_graf = st.columns(4) if tem_multiplos_ppgs else st.columns(3)
+        agrupar_niveis = cols_graf[0].radio("Visão dos Níveis:", ["Separar Teses e Dissertações", "Agrupar tudo (Total)"], horizontal=True, key="agrup_niv_perfil")
+        modo_analise = cols_graf[1].radio("Modo de Análise:", ["Visão Geral (Volume)", "Análise por Macrotemas"], horizontal=True, key="modo_ana_perfil")
+        tipo_grafico = cols_graf[2].radio("Tipo de Gráfico:", ["Barras", "Linhas"], horizontal=True, key="tipo_graf_perfil")
+        
+        separar_ppg_hist = False
+        if tem_multiplos_ppgs:
+            separar_ppg_hist = cols_graf[3].radio("Separar por PPG:", ["Não", "Sim"], horizontal=True, key="agrup_ppg_perfil") == "Sim"
         
         df_docs = pd.DataFrame(docs)
         if not df_docs.empty and 'ano' in df_docs.columns:
@@ -584,49 +820,85 @@ if termo_ativo:
                 
                 label_y = "Orientações" if tipo_busca in ["Orientador", "Co-orientador"] else "Documentos"
                 
+                # Configura facet_col se separar_ppg_hist for verdadeiro
+                facet_kws = dict(facet_col='programa_origem', facet_col_wrap=2) if separar_ppg_hist else dict()
+                groupby_cols = ['ano']
+                if separar_ppg_hist:
+                    groupby_cols.append('programa_origem')
+                    df_docs['programa_origem'] = df_docs['programa_origem'].fillna('Desconhecido')
+                
                 if modo_analise == "Visão Geral (Volume)":
                     if agrupar_niveis == "Agrupar tudo (Total)":
-                        df_plot = df_docs.groupby('ano').size().reset_index(name='Volume')
-                        fig = graf_func(df_plot, x='ano', y='Volume', title=f"{label_y} por Ano (Total)", template="plotly_dark", **marker_kw)
+                        df_plot = df_docs.groupby(groupby_cols).size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', title=f"{label_y} por Ano (Total)", template="plotly_dark", **marker_kw, **facet_kws)
                     else:
-                        df_plot = df_docs.groupby(['ano', 'nivel_academico']).size().reset_index(name='Volume')
-                        fig = graf_func(df_plot, x='ano', y='Volume', color='nivel_academico', title=f"{label_y} por Ano e Nível Acadêmico", template="plotly_dark", **barmode_kw, **marker_kw)
+                        df_plot = df_docs.groupby(groupby_cols + ['nivel_academico']).size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', color='nivel_academico', title=f"{label_y} por Ano e Nível Acadêmico", template="plotly_dark", **barmode_kw, **marker_kw, **facet_kws)
                 else:
                     if agrupar_niveis == "Agrupar tudo (Total)":
-                        df_plot = df_docs.groupby(['ano', 'macrotema']).size().reset_index(name='Volume')
-                        fig = graf_func(df_plot, x='ano', y='Volume', color='macrotema', title=f"{label_y} por Ano e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw)
+                        df_plot = df_docs.groupby(groupby_cols + ['macrotema']).size().reset_index(name='Volume')
+                        fig = graf_func(df_plot, x='ano', y='Volume', color='macrotema', title=f"{label_y} por Ano e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw, **facet_kws)
                     else:
                          df_docs['Nível/Tema'] = df_docs['nivel_academico'] + " - " + df_docs['macrotema']
-                         df_plot = df_docs.groupby(['ano', 'Nível/Tema']).size().reset_index(name='Volume')
-                         fig = graf_func(df_plot, x='ano', y='Volume', color='Nível/Tema', title=f"{label_y} por Ano, Nível e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw)
+                         df_plot = df_docs.groupby(groupby_cols + ['Nível/Tema']).size().reset_index(name='Volume')
+                         fig = graf_func(df_plot, x='ano', y='Volume', color='Nível/Tema', title=f"{label_y} por Ano, Nível e Macrotema", template="plotly_dark", **barmode_kw, **marker_kw, **facet_kws)
                 
                 fig.update_layout(xaxis_title="Ano", yaxis_title="Quantidade", xaxis=dict(tickmode='linear', dtick=1))
+                # Ajuste para facet annotations se houver
+                if separar_ppg_hist:
+                    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
                 st.plotly_chart(fig, use_container_width=True)
                 
         st.markdown(f"### ☁️ Nuvem de Palavras ({titulo_secao})")
-        modo_nuvem = st.selectbox("Fonte de Dados para Nuvem:", ["Tudo Combinado (Título + Resumo + Palavras-Chave)", "Apenas Palavras-chave", "Apenas Título", "Apenas Resumo"])
         
-        texto_completo = []
-        for d in docs:
-            if "Resumo" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
-                texto_completo.append(d.get('resumo', ''))
-            if "Título" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
-                texto_completo.append(d.get('titulo', ''))
-            if "Palavras-chave" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
-                texto_completo.append(" ".join(d.get('palavras_chave', [])))
-                
-        texto_str = " ".join([str(t) for t in texto_completo]).lower()
-        texto_limpo = re.sub(r'[^\w\s]', '', texto_str)
-        
+        col_nuvem1, col_nuvem2 = st.columns(2)
+        modo_nuvem = col_nuvem1.selectbox("Fonte de Dados para Nuvem:", ["Tudo Combinado (Título + Resumo + Palavras-Chave)", "Apenas Palavras-chave", "Apenas Título", "Apenas Resumo"])
+        separar_nuvem_ppg = False
+        if tem_multiplos_ppgs:
+            separar_nuvem_ppg = col_nuvem2.radio("Separar Nuvem por PPG:", ["Não", "Sim"], horizontal=True, key="sep_nuvem_ppg_perfil") == "Sim"
+
         stopwords = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'by'])
         
-        palavras_nuvem = [p for p in texto_limpo.split() if p not in stopwords and len(p) > 2]
-        if palavras_nuvem:
-            freq_dict = dict(Counter(palavras_nuvem).most_common(100))
-            html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
-            components.html(html_nuvem, height=480, scrolling=False)
+        def extrair_texto_docs(lista_docs):
+            texto_completo = []
+            for d in lista_docs:
+                if "Resumo" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                    texto_completo.append(d.get('resumo', ''))
+                if "Título" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                    texto_completo.append(d.get('titulo', ''))
+                if "Palavras-chave" in modo_nuvem or "Tudo Combinado" in modo_nuvem:
+                    texto_completo.append(" ".join(d.get('palavras_chave', [])))
+            texto_str = " ".join([str(t) for t in texto_completo]).lower()
+            return re.sub(r'[^\w\s]', '', texto_str)
+
+        if separar_nuvem_ppg:
+            docs_por_ppg = {}
+            for d in docs:
+                ppg = d.get('programa_origem', 'Desconhecido')
+                if ppg not in docs_por_ppg:
+                    docs_por_ppg[ppg] = []
+                docs_por_ppg[ppg].append(d)
+                
+            abas_ppg = st.tabs(list(docs_por_ppg.keys()))
+            for idx, ppg in enumerate(docs_por_ppg.keys()):
+                with abas_ppg[idx]:
+                    texto_limpo = extrair_texto_docs(docs_por_ppg[ppg])
+                    palavras_nuvem = [p for p in texto_limpo.split() if p not in stopwords and len(p) > 2]
+                    if palavras_nuvem:
+                        freq_dict = dict(Counter(palavras_nuvem).most_common(100))
+                        html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
+                        components.html(html_nuvem, height=480, scrolling=False)
+                    else:
+                        st.info("Palavras insuficientes para gerar a nuvem neste PPG.")
         else:
-            st.info("Palavras insuficientes para gerar a nuvem.")
+            texto_limpo = extrair_texto_docs(docs)
+            palavras_nuvem = [p for p in texto_limpo.split() if p not in stopwords and len(p) > 2]
+            if palavras_nuvem:
+                freq_dict = dict(Counter(palavras_nuvem).most_common(100))
+                html_nuvem = renderizar_nuvem_interativa_html(freq_dict)
+                components.html(html_nuvem, height=480, scrolling=False)
+            else:
+                st.info("Palavras insuficientes para gerar a nuvem.")
 
   
     st.markdown("### 🌌 Órbita de Relacionamentos")

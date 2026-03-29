@@ -2,11 +2,77 @@ import os
 import json
 import re
 import unicodedata
+import gzip
+from collections import defaultdict
 from sickle import Sickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
 import google.generativeai as genai
-import gzip
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import requests
+import difflib
+import time
+
+# --- INTEGRAÇÃO OFICIAL CAPES SUCUPIRA ---
+def carregar_catalogo_capes_ufsc():
+    """Baixa todos os programas da UFSC direto da CAPES para classificação oficial."""
+    print("📡 Baixando taxonomia oficial da CAPES (id-ies: 4362)...")
+    url = "https://apigw-proxy.capes.gov.br/observatorio/data/observatorio/ppg"
+    headers = {"Accept": "application/json"}
+    programas_capes = {}
+    page = 0
+    
+    while True:
+        try:
+            resposta = requests.get(url, params={"query": "id-ies:(4362)", "page": page, "size": 100}, headers=headers, timeout=15)
+            if resposta.status_code != 200: break
+            
+            dados = resposta.json()
+            resultados = dados if isinstance(dados, list) else dados.get('content', dados.get('data', []))
+            if not resultados: break
+            
+            for ppg in resultados:
+                nome_capes = ppg.get("nome", "").strip().upper()
+                nome_norm = ''.join(c for c in unicodedata.normalize('NFD', nome_capes) if unicodedata.category(c) != 'Mn')
+                # Salvamos a Grande Área como o Ecossistema principal
+                programas_capes[nome_norm] = ppg.get("nomeAreaConhecimento", "Multidisciplinar / Sem Área")
+            
+            if len(resultados) < 100: break
+            page += 1
+        except Exception as e:
+            print(f" [!] Erro ao conectar na CAPES: {e}")
+            break
+            
+    print(f"✅ Catálogo CAPES carregado com {len(programas_capes)} programas.")
+    return programas_capes
+
+def obter_ecossistema_capes(nome_prog, catalogo_capes):
+    """Encontra a Grande Área do PPG na base da CAPES usando Inteligência de Strings."""
+    if not catalogo_capes: return "Multidisciplinar / Transversal"
+    
+    nome_limpo = nome_prog.replace("Programa de Pós-Graduação em ", "").replace("Programa de Pós-Graduação ", "").replace("PPG em ", "").strip().upper()
+    nome_norm_busca = ''.join(c for c in unicodedata.normalize('NFD', nome_limpo) if unicodedata.category(c) != 'Mn')
+    
+    # 1. Busca Exata
+    if nome_norm_busca in catalogo_capes:
+        return catalogo_capes[nome_norm_busca]
+        
+    # 2. Busca Fuzzy (Aproximada)
+    chaves = list(catalogo_capes.keys())
+    matches = difflib.get_close_matches(nome_norm_busca, chaves, n=1, cutoff=0.65)
+    if matches:
+        return catalogo_capes[matches[0]]
+        
+    # 3. Interseção Semântica
+    palavras_busca = set([p for p in nome_norm_busca.split() if len(p) > 2])
+    for key_capes, grande_area in catalogo_capes.items():
+        palavras_capes = set([p for p in key_capes.split() if len(p) > 2])
+        if len(palavras_busca.intersection(palavras_capes)) >= max(1, len(palavras_busca) - 1):
+            return grande_area
+            
+    # Se o programa for novo demais e não estiver na CAPES ainda
+    return "Multidisciplinar / Transversal"
 
 # --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
 def extrair_melhor_ano(lista_datas):
@@ -81,8 +147,8 @@ def realizar_extracao(set_spec, nome_prog=""):
         
     return dados_extraidos
 
-# --- MOTOR DE INTELIGÊNCIA SEMÂNTICA (NMF + GEMINI) ---
-def aplicar_macrotemas(dados, api_key, num_topicos=12):
+# --- MOTOR DE INTELIGÊNCIA SEMÂNTICA (K-MEANS + NMF + GEMINI) ---
+def aplicar_macrotemas(dados, api_key):
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel('gemini-2.5-flash') 
@@ -106,15 +172,48 @@ def aplicar_macrotemas(dados, api_key, num_topicos=12):
         limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
         textos.append(limpo)
 
-    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=800)
+    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=1000)
     
     try:
         tfidf_matrix = vectorizer.fit_transform(textos)
-        nmf_model = NMF(n_components=num_topicos, random_state=42, init='nndsvd')
+    except Exception as e:
+        print(f" [!] Erro na vetorização matemática: {e}")
+        return dados
+
+    # =========================================================================
+    # NOVA LÓGICA: CÁLCULO DA QUANTIDADE ÓTIMA DE MACROTEMAS (SILHOUETTE SCORE)
+    # =========================================================================
+    print("   [+] Calculando a quantidade ótima de clusters matemáticos...")
+    min_k = 4
+    # O limite máximo testa até 20 temas, mas respeita ecossistemas muito pequenos
+    max_k = min(20, max(5, tfidf_matrix.shape[0] // 10)) 
+    
+    melhor_k = min_k
+    melhor_score = -1
+    
+    # Testa os cenários só se houver documentos suficientes
+    if tfidf_matrix.shape[0] > min_k:
+        for k in range(min_k, max_k + 1):
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(tfidf_matrix)
+            score = silhouette_score(tfidf_matrix, labels)
+            
+            if score > melhor_score:
+                melhor_score = score
+                melhor_k = k
+    else:
+        melhor_k = max(2, tfidf_matrix.shape[0] // 2)
+        
+    print(f"   [+] Quantidade ótima definida: {melhor_k} macrotemas (Score de Silhueta: {melhor_score:.3f})")
+    num_topicos = melhor_k
+    # =========================================================================
+
+    try:
+        nmf_model = NMF(n_components=num_topicos, random_state=42, init='nndsvd', max_iter=500)
         nmf_matrix = nmf_model.fit_transform(tfidf_matrix)
         feature_names = vectorizer.get_feature_names_out()
     except Exception as e:
-        print(f" [!] Erro na vetorização matemática: {e}")
+        print(f" [!] Erro no NMF: {e}")
         return dados
 
     clusters = []
@@ -137,80 +236,122 @@ Diretrizes rigorosas:
 GRUPOS DE PALAVRAS:
 {contexto}"""
 
-    try:
-        response = model.generate_content(
-            prompt_humanizado,
-            generation_config=genai.types.GenerationConfig(candidate_count=1, temperature=0.4)
-        )
-        respostas = response.text.strip().split('\n')
-        nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
-        
-        if len(nomes_finais) < num_topicos:
-            raise ValueError(f"Gemini retornou {len(nomes_finais)} nomes. Esperados: {num_topicos}")
+    # =========================================================================
+    # COMUNICAÇÃO COM O GEMINI COM PROTEÇÃO ANTI-BLOQUEIO (RATE LIMIT 429)
+    # =========================================================================
+    
+    max_tentativas = 3
+    nomes_finais = []
+    
+    for tentativa in range(max_tentativas):
+        try:
+            response = model.generate_content(
+                prompt_humanizado,
+                generation_config=genai.types.GenerationConfig(candidate_count=1, temperature=0.4)
+            )
+            respostas = response.text.strip().split('\n')
+            nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
+            
+            if len(nomes_finais) < num_topicos:
+                raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes. Esperados: {num_topicos}")
+                
+            break # Sucesso! Quebra o loop de retentativas e segue o baile
+            
+        except Exception as e:
+            erro_str = str(e)
+            # Se o erro for de Cota / Limite de Requisições (429)
+            if "429" in erro_str or "Quota" in erro_str or "exhausted" in erro_str.lower():
+                tempo_espera = 60 # Espera 1 minuto para a cota do Google resetar
+                print(f"   [⏳] Limite da API atingido. Pausando {tempo_espera}s... (Tentativa {tentativa + 1}/{max_tentativas})")
+                time.sleep(tempo_espera)
+            else:
+                # Se for outro erro (ex: internet caiu, erro interno do Google), não adianta esperar
+                print(f"   [!] Erro inesperado na API Gemini ({e}).")
+                break 
 
-    except Exception as e:
-        print(f" [!] Erro na API Gemini ({e}). Utilizando Fallback direto.")
+    # Fallback Seguro: Se gastou todas as tentativas ou deu erro fatal, faz o batismo manual
+    if not nomes_finais or len(nomes_finais) < num_topicos:
+        print("   [!] Aplicando Fallback de nomes (extração matemática direta)...")
         nomes_finais = []
         for c in clusters:
             palavras = c.split(': ')[1].split(', ')
             nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
 
+    # Aplica os nomes aos documentos
     for i, doc in enumerate(dados):
         top_idx = nmf_matrix[i].argmax()
         doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
 
     return dados
 
+
 # --- ORQUESTRAÇÃO DO PIPELINE ---
 def executar_pipeline_diario():
     print("==================================================")
-    print("🚀 INICIANDO PIPELINE DE EXTRAÇÃO - UFSC")
+    print("🚀 INICIANDO PIPELINE DE ECOSSISTEMAS - UFSC")
     print("==================================================")
     
-    # 1. Checa a chave da API no ambiente
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("❌ ERRO: A variável de ambiente 'GEMINI_API_KEY' não foi encontrada.")
-        print("Certifique-se de exportar a chave antes de rodar o script.")
         return
 
-    # 2. Carrega o Catálogo
     try:
         with open('programas_ufsc.json', 'r', encoding='utf-8') as f:
             catalogo_programas = json.load(f)
-        print(f"✅ Catálogo carregado: {len(catalogo_programas)} programas encontrados.")
     except FileNotFoundError:
-        print("❌ ERRO: Arquivo 'programas_ufsc.json' não encontrado na pasta atual.")
+        print("❌ ERRO: Arquivo 'programas_ufsc.json' não encontrado.")
         return
 
-    # 3. Fase de Extração
-    dados_totais = []
-    print("\n--- INICIANDO COLETA OAI-PMH ---")
+    # 1. Extração e Agrupamento por Afinidade (VIA CAPES)
+    print("\n--- INICIANDO COLETA OAI-PMH E TAXONOMIA CAPES ---")
+    
+    # NOVO: Baixa o catálogo oficial antes de começar a extrair os teses
+    catalogo_capes_oficial = carregar_catalogo_capes_ufsc()
+    
+    documentos_por_ecossistema = defaultdict(list)
+    
     for prog, set_spec in catalogo_programas.items():
-        print(f"-> Minerando: {prog} ({set_spec})")
+        print(f"-> Minerando: {prog}")
         dados_prog = realizar_extracao(set_spec, nome_prog=prog)
-        dados_totais.extend(dados_prog)
-        print(f"   [+] Coletados {len(dados_prog)} documentos.")
         
-    if not dados_totais:
-        print("\n❌ ERRO FATAL: Nenhum documento foi extraído. Abortando.")
+        if dados_prog:
+            # NOVO: Classifica o ecossistema usando a base do governo
+            ecossistema = obter_ecossistema_capes(prog, catalogo_capes_oficial)
+            
+            # Padroniza a capitalização do nome da área (ex: "ENGENHARIAS" vira "Engenharias")
+            ecossistema = ecossistema.title() 
+            
+            for doc in dados_prog:
+                doc['ecossistema_afinidade'] = ecossistema
+            
+            documentos_por_ecossistema[ecossistema].extend(dados_prog)
+            print(f"   [+] {len(dados_prog)} docs alocados na Área: {ecossistema}")
+
+    if not documentos_por_ecossistema:
+        print("\n❌ ERRO FATAL: Nenhum documento extraído.")
         return
+
+    # 2. Computação Semântica por Ecossistema
+    print("\n--- INICIANDO COMPUTAÇÃO SEMÂNTICA POR ECOSSISTEMA ---")
+    dados_finais_consolidados = []
+    
+    for ecossistema, docs_eco in documentos_por_ecossistema.items():
+        print(f"\n🧠 Analisando Ecossistema: {ecossistema} ({len(docs_eco)} documentos)")
         
-    print(f"\n✅ COLETA CONCLUÍDA: {len(dados_totais)} documentos totais minerados.")
+        docs_tematizados = aplicar_macrotemas(docs_eco, api_key=api_key)
+        dados_finais_consolidados.extend(docs_tematizados)
+        
+        # Respiro entre as áreas para esfriar a API
+        time.sleep(5)
 
-    # 4. Fase de Inteligência (Macrotemas)
-    print("\n--- INICIANDO COMPUTAÇÃO SEMÂNTICA (NMF + GEMINI) ---")
-    dados_finais = aplicar_macrotemas(dados_totais, api_key=api_key, num_topicos=15)
-    print("✅ Macrotemas computados e atribuídos com sucesso.")
-
-    # 5. Salvamento dos Dados (agora Compactado)
+    # 3. Salvamento dos Dados
     nome_arquivo_saida = 'base_consolidada_ufsc.json.gz'
     print(f"\n--- COMPACTANDO E SALVANDO DADOS ({nome_arquivo_saida}) ---")
     try:
-        # Usamos gzip.open com 'wt' (Write Text)
         with gzip.open(nome_arquivo_saida, 'wt', encoding='utf-8') as f:
-            json.dump(dados_finais, f, ensure_ascii=False)
-        print("✅ Arquivo GZIP gerado com sucesso. O tamanho caiu drasticamente!")
+            json.dump(dados_finais_consolidados, f, ensure_ascii=False)
+        print("✅ Arquivo GZIP gerado com sucesso!")
     except Exception as e:
         print(f"❌ ERRO ao salvar o arquivo: {e}")
 

@@ -370,7 +370,7 @@ def plotar_grafico_3d_sna(sna_global, tipo_alvo, termo_destaque=None):
         df, x='Grau', y='Betweenness', z='Closeness',
         color='Comunidade', hover_name='Item',
         symbol='Status' if termo_destaque else None,
-        size='Tamanho', size_max=30, opacity=0.7, template="plotly_dark"
+        size='Tamanho', size_max=30, opacity=0.7
     )
     
     fig.update_layout(
@@ -997,7 +997,7 @@ def plotar_mapa_tematico(df_plot, x_col, y_col, size_col, label_col, title):
 
     fig = px.scatter(
         df_plot, x=x_col, y=y_col, size=size_col, text=label_col, color=label_col,
-        size_max=70, template="plotly_dark", title=title
+        size_max=70, title=title
     )
     
     # Ajuste visual das bolhas e rótulos

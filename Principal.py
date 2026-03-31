@@ -57,7 +57,7 @@ if 'macrotemas_computados' not in st.session_state:
 # --- TELA DE SELEÇÃO INICIAL (CARREGAMENTO PREGUIÇOSO / LAZY LOADING) ---
 if 'dados_completos' not in st.session_state or st.session_state.get('recarregar'):
     st.title("🔌 Seleção de Programas (PPGs)")
-    st.markdown("A base consolidada com os Macrotemas está pronta. Para otimizar a memória e a velocidade da rede, selecione os programas que deseja analisar antes de carregar os dados.")
+    st.markdown("Selecione os programas que deseja analisar para carregar a base consolidada de publicações.")
     
     catalogo_leve = carregar_catalogo_programas()
     programas_disponiveis = sorted(list(catalogo_leve.keys()))
@@ -68,18 +68,15 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
         if programas_selecionados:
             with st.spinner("Lendo a base consolidada e filtrando os PPGs selecionados. Isso levará apenas alguns segundos..."):
                 try:
-                    # O arquivo pesado de +100MB só é lido AQUI, após o clique
                     with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
                         base_total = json.load(f)
                         
-                    # Filtra mantendo apenas os programas escolhidos
                     dados_filtrados = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
                     
                     if not dados_filtrados:
-                        st.warning("Nenhum documento encontrado para os PPGs selecionados. Talvez o pipeline ainda não os tenha extraído.")
+                        st.warning("Nenhum documento encontrado para os PPGs selecionados.")
                         st.stop()
                         
-                    # Salva na sessão e destrava o aplicativo
                     st.session_state['dados_completos'] = dados_filtrados
                     st.session_state['programas_selecionados_lista'] = programas_selecionados
                     st.session_state['nome_programa'] = f"{len(programas_selecionados)} PPG(s) Selecionado(s): {', '.join(programas_selecionados)}"
@@ -88,11 +85,150 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
                     st.rerun()
                     
                 except FileNotFoundError:
-                    st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado. Por favor, rode o pipeline de extração primeiro.")
+                    st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado.")
                     st.stop()
         else:
             st.warning("Por favor, selecione pelo menos um programa para continuar.")
+
+    # =====================================================================
+    # PANORAMA GLOBAL DA UFSC (CAPES)
+    # =====================================================================
+    st.markdown("---")
+    st.markdown("## 🏛️ Panorama Global da Pós-Graduação (UFSC)")
+    st.markdown("Visão macro do ecossistema institucional com base nos dados oficiais da Plataforma Sucupira (CAPES).")
+    
+    with st.spinner("Carregando catálogo da CAPES..."):
+        catalogo_capes = carregar_catalogo_capes_ufsc()
+        
+    if catalogo_capes:
+        # 1. Prepara o DataFrame base
+        df_capes = pd.DataFrame.from_dict(catalogo_capes, orient='index')
+        
+        # Filtra apenas programas que estão operacionais
+        if 'Situação' in df_capes.columns:
+            df_capes = df_capes[df_capes['Situação'].str.contains('FUNCIONAMENTO|ATIVO', case=False, na=True)]
             
+        # 2. Extrai as opções únicas para os filtros
+        op_niveis = ["Mestrado", "Doutorado"] 
+        op_modalidades = sorted([str(x) for x in df_capes['Modalidade'].unique() if x and x != 'Não informado'])
+        op_g_areas = sorted([str(x) for x in df_capes['Grande Área'].unique() if x and x != 'Não informado'])
+        op_areas = sorted([str(x) for x in df_capes['Área de Conhecimento'].unique() if x and x != 'Não informado'])
+        
+        # Extração das notas únicas (ordenadas da maior para a menor)
+        op_notas = sorted([str(x) for x in df_capes['Nota'].unique() if x and x != 'Não informado'], reverse=True)
+        
+        # 3. Desenha a barra de filtros (Ajustado para 5 colunas ou 3+2 para melhor leitura)
+        st.markdown("#### 🔍 Filtros Dinâmicos")
+        
+        # Primeira linha de filtros
+        cf1, cf2, cf3 = st.columns(3)
+        with cf1:
+            f_nivel = st.multiselect("Nível (Grau Acadêmico):", options=op_niveis, default=op_niveis)
+        with cf2:
+            f_mod = st.multiselect("Modalidade:", options=op_modalidades, default=op_modalidades)
+        with cf3:
+            f_nota = st.multiselect("Nota CAPES:", options=op_notas, default=op_notas)
+            
+        # Segunda linha de filtros
+        cf4, cf5 = st.columns(2)
+        with cf4:
+            f_garea = st.multiselect("Grande Área:", options=op_g_areas, default=op_g_areas)
+        with cf5:
+            f_area = st.multiselect("Área de Conhecimento:", options=op_areas, default=op_areas)
+            
+        # 4. Aplica os filtros ao DataFrame
+        df_filtrado = df_capes.copy()
+        
+        # Lógica especial para o Nível (Contains)
+        if f_nivel:
+            mask_nivel = pd.Series(False, index=df_filtrado.index)
+            if "Mestrado" in f_nivel:
+                mask_nivel = mask_nivel | df_filtrado['Grau Acadêmico'].str.contains('Mestrado', case=False, na=False)
+            if "Doutorado" in f_nivel:
+                mask_nivel = mask_nivel | df_filtrado['Grau Acadêmico'].str.contains('Doutorado', case=False, na=False)
+            df_filtrado = df_filtrado[mask_nivel]
+            
+        # Filtros por correspondência exata
+        if f_mod: df_filtrado = df_filtrado[df_filtrado['Modalidade'].isin(f_mod)]
+        if f_nota: df_filtrado = df_filtrado[df_filtrado['Nota'].isin(f_nota)]
+        if f_garea: df_filtrado = df_filtrado[df_filtrado['Grande Área'].isin(f_garea)]
+        if f_area: df_filtrado = df_filtrado[df_filtrado['Área de Conhecimento'].isin(f_area)]
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if df_filtrado.empty:
+            st.warning("Nenhum programa encontrado com essa combinação de filtros.")
+        else:
+            # 5. Calcula KPIs com o DataFrame Filtrado
+            total_programas = len(df_filtrado)
+            df_filtrado['Nota_Num'] = pd.to_numeric(df_filtrado['Nota'], errors='coerce').fillna(0)
+            excelencia = len(df_filtrado[df_filtrado['Nota_Num'] >= 6])
+            
+            academicos = len(df_filtrado[df_filtrado['Modalidade'].str.contains('Acad', case=False, na=False)])
+            profissionais = len(df_filtrado[df_filtrado['Modalidade'].str.contains('Prof', case=False, na=False)])
+            
+            # Exibe KPIs
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total de Programas (PPGs)", total_programas)
+            c2.metric("Programas de Excelência (Nota 6/7)", excelencia)
+            c3.metric("Modalidade Acadêmica", academicos)
+            c4.metric("Modalidade Profissional", profissionais)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # 6. Desenha Gráficos Interativos (Baseados no filtro)
+            col_graf1, col_graf2 = st.columns([2, 1])
+            
+            with col_graf1:
+                st.markdown("#### Distribuição por Grande Área do Conhecimento")
+                df_areas = df_filtrado['Grande Área'].value_counts().reset_index()
+                df_areas.columns = ['Grande Área', 'Quantidade']
+                
+                fig_areas = px.bar(
+                    df_areas, 
+                    y='Grande Área', 
+                    x='Quantidade', 
+                    orientation='h',
+                    text='Quantidade',
+                    color='Grande Área'
+                )
+                fig_areas.update_layout(
+                    showlegend=False, 
+                    yaxis={'categoryorder':'total ascending'},
+                    xaxis_title="Número de Programas",
+                    yaxis_title="",
+                    margin=dict(l=0, r=0, t=0, b=0)
+                )
+                st.plotly_chart(fig_areas, use_container_width=True, theme="streamlit")
+                
+            with col_graf2:
+                st.markdown("#### Conceito CAPES (Notas)")
+                df_notas = df_filtrado[df_filtrado['Nota_Num'] > 0]['Nota'].astype(str).value_counts().reset_index()
+                df_notas.columns = ['Nota CAPES', 'Quantidade']
+                
+                if not df_notas.empty:
+                    fig_notas = px.pie(
+                        df_notas, 
+                        names='Nota CAPES', 
+                        values='Quantidade',
+                        hole=0.4,
+                        color='Nota CAPES',
+                        color_discrete_map={'7': '#2ECC71', '6': '#27AE60', '5': '#3498DB', '4': '#F1C40F', '3': '#E67E22'}
+                    )
+                    fig_notas.update_traces(textposition='inside', textinfo='percent+label')
+                    fig_notas.update_layout(margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
+                    st.plotly_chart(fig_notas, use_container_width=True, theme="streamlit")
+                else:
+                    st.info("Nenhuma nota numérica registrada para os filtros atuais.")
+                
+            # Tabela Geral de Consulta Rápida
+            with st.expander("Tabela Completa de Programas Filtrados"):
+                df_exibicao = df_filtrado[['Nome', 'Código', 'Grande Área', 'Nota', 'Modalidade', 'Grau Acadêmico']].sort_values(by='Nome')
+                st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+
+    else:
+        st.info("Nenhum dado da CAPES foi carregado no momento.")
+
     # Trava a execução do resto do app (SNA, gráficos, etc.) até o usuário passar desta tela
     st.stop()
 

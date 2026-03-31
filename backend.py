@@ -19,7 +19,275 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 from scipy import stats
+import io
+import itertools
 
+
+# --- FUNÇÕES DE BACK-END (AVANÇADO) ---
+@st.cache_data
+def preparar_dataframe(dados_lista):
+    """Prepara o DataFrame para as análises avançadas (Burst, Memética, etc)."""
+    df = pd.DataFrame(dados_lista)
+    df['Ano'] = pd.to_numeric(df.get('ano'), errors='coerce')
+    df = df.dropna(subset=['Ano'])
+    df['Ano'] = df['Ano'].astype(int)
+    df['nivel_academico'] = df.get('nivel_academico', 'Outros').fillna('Outros')
+    return df
+
+@st.cache_data
+def detetar_explosoes(df_base, min_freq, z_score):
+    if df_base.empty or 'palavras_chave' not in df_base.columns: return pd.DataFrame()
+    df_f = df_base.explode('palavras_chave').groupby(['Ano', 'palavras_chave']).size().reset_index(name='Frequencia')
+    if df_f.empty: return pd.DataFrame()
+    
+    contagem = df_f.groupby('palavras_chave')['Frequencia'].sum()
+    validos = contagem[contagem >= min_freq].index
+    df_f = df_f[df_f['palavras_chave'].isin(validos)]
+    
+    if df_f.empty: return pd.DataFrame()
+    
+    anos = range(df_f['Ano'].min(), df_f['Ano'].max() + 1)
+    grelha = pd.MultiIndex.from_product([anos, validos], names=['Ano', 'palavras_chave']).to_frame(index=False)
+    df_c = pd.merge(grelha, df_f, on=['Ano', 'palavras_chave'], how='left').fillna(0).sort_values(['palavras_chave', 'Ano'])
+    
+    df_c['Media'] = df_c.groupby('palavras_chave')['Frequencia'].transform(lambda x: x.expanding().mean().shift(1).fillna(0))
+    df_c['Std'] = df_c.groupby('palavras_chave')['Frequencia'].transform(lambda x: x.expanding().std().shift(1).fillna(0))
+    df_c['Em_Explosao'] = (df_c['Frequencia'] > (df_c['Media'] + (z_score * df_c['Std']))) & (df_c['Frequencia'] >= 2)
+    return df_c
+
+@st.cache_resource
+def gerar_grafo_genealogico(dados_lista, orientadores_foco):
+    G = nx.DiGraph()
+    for d in dados_lista:
+        ori = d.get('orientador')
+        autores = d.get('autores', [])
+        if ori:
+            for autor in autores:
+                G.add_edge(ori, autor, label=f"{d.get('nivel_academico', '')} ({d.get('ano', '')})")
+
+    if orientadores_foco:
+        nós_desc = set()
+        for o in orientadores_foco:
+            if G.has_node(o):
+                nós_desc.update(nx.descendants(G, o))
+                nós_desc.add(o)
+        G = G.subgraph(nós_desc).copy()
+
+    for node in G.nodes():
+        tem_pupilos = G.out_degree(node) > 0
+        foi_pupilo = G.in_degree(node) > 0
+        if tem_pupilos and foi_pupilo: color, label = '#F39C12', f"🎓 {node}"
+        elif tem_pupilos: color, label = '#E74C3C', f"🏛️ {node}"
+        else: color, label = '#3498DB', node
+        G.nodes[node].update({'color': color, 'label': label, 'size': 25 if tem_pupilos else 15})
+
+    net = Network(height='700px', width='100%', bgcolor='#222222', font_color='white', directed=True, cdn_resources='remote')
+    net.from_nx(G)
+    net.set_options('{"layout": {"hierarchical": {"enabled": true, "direction": "UD", "sortMethod": "directed"}}, "physics": {"enabled": false}}')
+    path = "temp_gen.html"
+    net.save_graph(path)
+    return path, G.number_of_nodes(), G.number_of_edges()
+
+@st.cache_data
+def calcular_burt(dados_lista):
+    G = nx.Graph()
+    for d in dados_lista:
+        ori = d.get('orientador')
+        if ori:
+            G.add_node(ori, tipo='Orientador')
+            for pk in d.get('palavras_chave', []):
+                G.add_node(pk, tipo='Conceito')
+                G.add_edge(ori, pk)
+    constraint = nx.constraint(G)
+    betweenness = nx.betweenness_centrality(G)
+    degree = dict(G.degree())
+    resumo = []
+    for node in G.nodes():
+        if G.nodes[node].get('tipo') == 'Orientador':
+            resumo.append({
+                'Orientador': node,
+                'Restrição (Constraint)': constraint.get(node, 0),
+                'Intermediação (Betweenness)': betweenness.get(node, 0),
+                'Diversidade': degree.get(node, 0)
+            })
+    return pd.DataFrame(resumo)
+
+@st.cache_data
+def preparar_sankey(dados_lista, top_n=10):
+    df = pd.DataFrame(dados_lista)
+    if 'orientador' not in df.columns: return [], [], [], []
+    top_orient = df['orientador'].value_counts().head(top_n).index.tolist()
+    df_f = df[df['orientador'].isin(top_orient)]
+    fluxos = []
+    for _, row in df_f.iterrows():
+        ori, niv = row.get('orientador'), row.get('nivel_academico', 'Outros')
+        if not ori or not pd.notna(ori): continue
+        fluxos.append({'src': ori, 'tgt': niv, 'val': 1})
+        for pk in row.get('palavras_chave', [])[:2]:
+            if pk: fluxos.append({'src': niv, 'tgt': pk, 'val': 1})
+            
+    if not fluxos: return [], [], [], []
+    df_fluxos = pd.DataFrame(fluxos).groupby(['src', 'tgt']).sum().reset_index()
+    nodes = list(set(df_fluxos['src']).union(set(df_fluxos['tgt'])))
+    mapping = {name: i for i, name in enumerate(nodes)}
+    return nodes, df_fluxos['src'].map(mapping), df_fluxos['tgt'].map(mapping), df_fluxos['val']
+
+@st.cache_data
+def calcular_metricas_memeticas(df_base):
+    import re
+    import unicodedata 
+    
+    if df_base.empty: 
+        return pd.DataFrame(), pd.DataFrame(), 0, 0, pd.DataFrame(), pd.DataFrame()
+
+    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+
+    def remover_acentos(texto):
+        if not isinstance(texto, str): return ""
+        return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+    stopwords_norm = {remover_acentos(w) for w in stopwords}
+
+    def extrair_memes_completos(row):
+        pks = row.get('palavras_chave', [])
+        if not isinstance(pks, list):
+            pks = [pks] if pd.notna(pks) else []
+        memes = set([remover_acentos(str(p).lower().strip()) for p in pks if str(p).strip()])
+        
+        titulo_norm = remover_acentos(str(row.get('titulo', '')).lower())
+        palavras_titulo = re.findall(r'\b[a-z]{3,}\b', titulo_norm)
+        memes.update([p for p in palavras_titulo if p not in stopwords_norm])
+        
+        return list(memes)
+
+    df_copy = df_base.copy()
+    df_copy['memes_todos'] = df_copy.apply(extrair_memes_completos, axis=1)
+    
+    df_explodido = df_copy.explode('memes_todos')
+    df_explodido = df_explodido[df_explodido['memes_todos'].notna()]
+    df_explodido = df_explodido[df_explodido['memes_todos'].str.strip() != '']
+    df_explodido['meme'] = df_explodido['memes_todos']
+
+    fecundidade = df_explodido.groupby('meme')['titulo'].nunique().reset_index(name='fecundidade')
+    
+    df_mortos = fecundidade[fecundidade['fecundidade'] == 1][['meme']].rename(columns={'meme': 'Memes Mortos (1 Aparição)'})
+    df_vivos = fecundidade[fecundidade['fecundidade'] > 1].sort_values('fecundidade', ascending=False).rename(columns={'meme': 'Memes Sobreviventes', 'fecundidade': 'Nº de Aparições'})
+
+    mortalidade_count = len(df_mortos)
+    sobreviventes_count = len(df_vivos)
+
+    longevidade = df_explodido.groupby('meme').agg(
+        ano_nascimento=('Ano', 'min'),
+        ano_extincao=('Ano', 'max'),
+        total_aparicoes=('titulo', 'nunique')
+    ).reset_index()
+    
+    longevidade['tempo_vida_anos'] = longevidade['ano_extincao'] - longevidade['ano_nascimento']
+    longevidade_valida = longevidade[longevidade['total_aparicoes'] > 1].copy()
+
+    return fecundidade, longevidade_valida, mortalidade_count, sobreviventes_count, df_mortos, df_vivos
+
+
+# =========================================================================
+# --- NOVO LÓGICA SANKEY TEMPORAL (PALAVRAS-CHAVE) ---
+# =========================================================================
+@st.cache_data
+def preparar_sankey_temporal(dados_lista, top_n, p1_range, p2_range, p3_range):
+    """Mapeia a evolução temática (Bibliometrix Style) cruzando palavras-chave 
+    através dos pesquisadores (Orientadores/Autores) que transitaram entre os períodos."""
+    df = pd.DataFrame(dados_lista)
+    df['Ano'] = pd.to_numeric(df.get('ano'), errors='coerce')
+    
+    # Extrai os anos iniciais e finais de cada período
+    p1_y = (p1_range[0].year, p1_range[1].year)
+    p2_y = (p2_range[0].year, p2_range[1].year)
+    p3_y = (p3_range[0].year, p3_range[1].year)
+
+    def get_period_df(df_base, years):
+        return df_base[(df_base['Ano'] >= years[0]) & (df_base['Ano'] <= years[1])]
+
+    df_p1 = get_period_df(df, p1_y)
+    df_p2 = get_period_df(df, p2_y)
+    df_p3 = get_period_df(df, p3_y)
+
+    # Identifica o Top N de palavras de cada período isoladamente
+    def get_top_kw(df_p, n):
+        if df_p.empty or 'palavras_chave' not in df_p.columns: return []
+        return df_p.explode('palavras_chave')['palavras_chave'].value_counts().head(n).index.tolist()
+
+    top_kw1 = get_top_kw(df_p1, top_n)
+    top_kw2 = get_top_kw(df_p2, top_n)
+    top_kw3 = get_top_kw(df_p3, top_n)
+
+    if not top_kw1 or not top_kw2 or not top_kw3: return [], [], [], []
+
+    # Cria as etiquetas (nodes) únicas para cada período
+    lbl_p1 = str(p1_y[0])
+    lbl_p2 = str(p2_y[0])
+    lbl_p3 = str(p3_y[0])
+    
+    nodes_labels = [f"{kw} ({lbl_p1})" for kw in top_kw1] + \
+                   [f"{kw} ({lbl_p2})" for kw in top_kw2] + \
+                   [f"{kw} ({lbl_p3})" for kw in top_kw3]
+                   
+    mapping = {label: i for i, label in enumerate(nodes_labels)}
+    fluxos = []
+
+    # Extrai o "DNA do Pesquisador": Quais palavras ele usou em um determinado período?
+    def get_researcher_kws(df_period, top_kws):
+        df_exp = df_period.explode('palavras_chave')
+        df_exp = df_exp[df_exp['palavras_chave'].isin(top_kws)]
+        
+        researcher_kws = {}
+        for _, row in df_exp.iterrows():
+            kw = row['palavras_chave']
+            ori = row.get('orientador')
+            autores = row.get('autores', [])
+            if isinstance(autores, str): autores = [autores]
+            elif not isinstance(autores, list): autores = []
+            
+            # Une orientador e aluno como "vetores" de transferência de conhecimento
+            researchers = [ori] + autores if ori else autores
+            for r in researchers:
+                if pd.notna(r) and str(r).strip() != "":
+                    if r not in researcher_kws: researcher_kws[r] = set()
+                    researcher_kws[r].add(kw)
+        return researcher_kws
+
+    rk_p1 = get_researcher_kws(df_p1, top_kw1)
+    rk_p2 = get_researcher_kws(df_p2, top_kw2)
+    rk_p3 = get_researcher_kws(df_p3, top_kw3)
+
+    # Conecta as palavras-chave se os mesmos pesquisadores publicaram nelas entre os períodos
+    def calc_flow(rk_src, rk_tgt, label_src, label_tgt):
+        # Encontra quem publicou em ambos os períodos
+        shared_researchers = set(rk_src.keys()).intersection(set(rk_tgt.keys()))
+        links_dict = {}
+        
+        for r in shared_researchers:
+            for ks in rk_src[r]:
+                for kt in rk_tgt[r]:
+                    pair = (f"{ks} ({label_src})", f"{kt} ({label_tgt})")
+                    # Incrementa o "peso" do fluxo baseado na repetição do caminho
+                    links_dict[pair] = links_dict.get(pair, 0) + 1
+        
+        for (src_node, tgt_node), val in links_dict.items():
+            fluxos.append({'src': src_node, 'tgt': tgt_node, 'val': val})
+
+    # Calcula os fluxos P1 -> P2 e P2 -> P3
+    calc_flow(rk_p1, rk_p2, lbl_p1, lbl_p2)
+    calc_flow(rk_p2, rk_p3, lbl_p2, lbl_p3)
+
+    if not fluxos: return nodes_labels, [], [], []
+
+    df_fluxos = pd.DataFrame(fluxos)
+    
+    # Mapeia os textos de volta para os índices numéricos exigidos pelo Plotly Sankey
+    sources = df_fluxos['src'].map(mapping)
+    targets = df_fluxos['tgt'].map(mapping)
+    values = df_fluxos['val']
+
+    return nodes_labels, sources.tolist(), targets.tolist(), values.tolist()# =========================================================================
 
 def renderizar_nuvem_interativa_html_exploracao(word_freq_dict):
     data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])

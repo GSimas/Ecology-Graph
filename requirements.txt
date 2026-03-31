@@ -11,7 +11,8 @@ requests
 scikit-learn
 scipy
 sickle
-streamlit
+streamlit>=1.40.0
 streamlit-agraph
 toml
 wordcloud
+protobuf==3.20.3

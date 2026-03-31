@@ -16,3 +16,4 @@ streamlit-agraph
 toml
 wordcloud
 protobuf==3.20.3
+setuptools

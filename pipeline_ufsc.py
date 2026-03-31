@@ -13,6 +13,67 @@ from sklearn.metrics import silhouette_score
 import requests
 import difflib
 import time
+from neo4j import GraphDatabase
+
+# --- MOTOR DE INGESTÃO NEO4J ---
+def popular_banco_grafos(dados, uri="neo4j://localhost:7687", user="neo4j", password="sua_senha_aqui"):
+    print("\n--- 🌐 INICIANDO MIGRAÇÃO PARA O NEO4J ---")
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    
+    # Consultas Cypher para criar o ecossistema
+    query_estrutural = """
+    UNWIND $batch AS doc
+    
+    // 1. Cria a Grande Área e o Programa
+    MERGE (eco:Ecossistema {nome: doc.ecossistema_afinidade})
+    MERGE (p:Programa {nome: doc.programa_origem})
+    MERGE (p)-[:PERTENCE_A]->(eco)
+    
+    // 2. Cria o Documento (Tese/Dissertação)
+    MERGE (d:Documento {titulo: doc.titulo})
+    SET d.ano = doc.ano, 
+        d.nivel = doc.nivel_academico, 
+        d.macrotema = doc.macrotema,
+        d.resumo = doc.resumo
+        
+    MERGE (d)-[:VINCULADO_A]->(p)
+    
+    // 3. Conecta Autores e Conceitos
+    FOREACH (autor_nome IN doc.autores |
+        MERGE (a:Autor {nome: autor_nome})
+        MERGE (a)-[:ESCREVEU]->(d)
+    )
+    
+    FOREACH (pk IN doc.palavras_chave |
+        MERGE (c:Conceito {nome: pk})
+        MERGE (d)-[:ABORDA]->(c)
+    )
+    """
+    
+    # Query separada para o Orientador (para evitar nós em branco se vier nulo)
+    query_orientador = """
+    UNWIND $batch AS doc
+    WITH doc WHERE doc.orientador IS NOT NULL AND doc.orientador <> ''
+    MATCH (d:Documento {titulo: doc.titulo})
+    MERGE (o:Orientador {nome: doc.orientador})
+    MERGE (o)-[:ORIENTOU]->(d)
+    """
+
+    try:
+        with driver.session() as session:
+            # Dica de ouro: Cria índices para a injeção ser ultra rápida
+            session.run("CREATE INDEX IF NOT EXISTS FOR (d:Documento) ON (d.titulo)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (c:Conceito) ON (c.nome)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (o:Orientador) ON (o.nome)")
+            
+            print("   [+] Injetando Nós e Relacionamentos no Banco...")
+            session.run(query_estrutural, batch=dados)
+            session.run(query_orientador, batch=dados)
+            print("   [+] Injeção concluída com sucesso! O Ecossistema está vivo.")
+    except Exception as e:
+        print(f"   [!] Erro ao conectar ou injetar no Neo4j: {e}")
+    finally:
+        driver.close()
 
 # --- INTEGRAÇÃO OFICIAL CAPES SUCUPIRA ---
 def carregar_catalogo_capes_ufsc():
@@ -354,6 +415,14 @@ def executar_pipeline_diario():
         print("✅ Arquivo GZIP gerado com sucesso!")
     except Exception as e:
         print(f"❌ ERRO ao salvar o arquivo: {e}")
+
+    # 4. Envio para o Banco de Grafos
+    # Exemplo de como chamar no final do pipeline_ufsc.py
+    popular_banco_grafos(
+    dados_finais_consolidados, 
+    uri="neo4j+s://e3b303f3.databases.neo4j.io",
+    password="d8mLtFBC4u5C7idBPmZFhKJOSTmNbU-H_HyaD-iITFU"
+    )
 
     print("\n==================================================")
     print("🎯 PIPELINE FINALIZADO COM SUCESSO!")

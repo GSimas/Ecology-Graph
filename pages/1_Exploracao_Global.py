@@ -14,6 +14,20 @@ import numpy as np
 import scipy as sp
 import io
 
+from backend import (
+    calcular_sna_global,
+    calcular_maturidade_rede,
+    renderizar_nuvem_interativa_html_exploracao,
+    gerar_nodos_coocorrencia_agraph,
+    preparar_csv_exportacao,
+    calcular_metricas_complexas,
+    preparar_exportacao_grafo,
+    obter_frequencias_texto,
+    gerar_nodos_globais_agraph,
+    obter_dataframe_metricas,
+    preparar_dados_base_df
+)
+
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
 chaves_necessarias = {
     'grafo_pronto': False,
@@ -68,236 +82,6 @@ anos_disponiveis = [int(d.get('ano')) for d in dados_completos if d.get('ano') a
 min_ano_global = min(anos_disponiveis) if anos_disponiveis else 2000
 max_ano_global = max(anos_disponiveis) if anos_disponiveis else 2026
 
-# --- FUNÇÕES DE BACK-END ---
-@st.cache_data
-def preparar_dados_base_df(dados):
-    df = pd.DataFrame(dados)
-    df['Ano'] = pd.to_numeric(df.get('ano'), errors='coerce')
-    df = df.dropna(subset=['Ano'])
-    df['Ano'] = df['Ano'].astype(int)
-    df['nivel_academico'] = df.get('nivel_academico', 'Outros').fillna('Outros')
-    df['titulo'] = df.get('titulo', '').fillna('')
-    df['orientador'] = df.get('orientador', 'Não informado').fillna('Não informado')
-    return df
-
-@st.cache_data
-def obter_dataframe_metricas(dados_recorte):
-    G = nx.Graph()
-    for tese in dados_recorte:
-        doc_id = tese['titulo']
-        G.add_node(doc_id, tipo='Documento')
-        for autor in tese.get('autores', []):
-            G.add_node(autor, tipo='Autor')
-            G.add_edge(autor, doc_id)
-        if tese.get('orientador'):
-            G.add_node(tese['orientador'], tipo='Orientador')
-            G.add_edge(tese['orientador'], doc_id)
-        for pk in tese.get('palavras_chave', []):
-            G.add_node(pk, tipo='Conceito')
-            G.add_edge(doc_id, pk)
-
-    degree_cent = nx.degree_centrality(G)
-    betweenness_cent = nx.betweenness_centrality(G)
-    closeness_cent = nx.closeness_centrality(G) # NOVO CÁLCULO
-    
-    lista = []
-    for node, attrs in G.nodes(data=True):
-        lista.append({
-            'Entidade (Nó)': node,
-            'Categoria': attrs.get('tipo', 'Desconhecido'),
-            'Grau Absoluto': G.degree(node),
-            'Degree Centrality': degree_cent.get(node, 0),
-            'Betweenness': betweenness_cent.get(node, 0),
-            'Closeness': closeness_cent.get(node, 0) # NOVA MÉTRICA
-        })
-    return pd.DataFrame(lista)
-
-@st.cache_resource
-def gerar_nodos_globais_agraph(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo"):
-    G = nx.Graph()
-    for tese in dados_recorte:
-        doc_id = tese['titulo']
-        G.add_node(doc_id, label=doc_id[:30], tipo='Documento', nivel=tese.get('nivel_academico', 'N/A'), ano=tese.get('ano', 'N/A'))
-        if tese.get('orientador'): 
-            G.add_node(tese['orientador'], label=tese['orientador'], tipo='Orientador')
-            G.add_edge(tese['orientador'], doc_id)
-        for pk in tese.get('palavras_chave', []): 
-            G.add_node(pk, label=pk, tipo='Conceito')
-            G.add_edge(doc_id, pk)
-
-    deg_cent, bet_cent, grau_abs = nx.degree_centrality(G), nx.betweenness_centrality(G), dict(G.degree())
-    max_deg, max_bet, max_abs = max(deg_cent.values() or [1]), max(bet_cent.values() or [1]), max(grau_abs.values() or [1])
-
-    comunidades = nx_comm.louvain_communities(G)
-    legendas_comunidades = []
-    paleta = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6']
-    
-    for i, comm in enumerate(comunidades):
-        cor_com = paleta[i % len(paleta)]
-        legendas_comunidades.append({"id": i+1, "cor": cor_com, "tamanho": len(comm)})
-        for node in comm: 
-            G.nodes[node]['color'] = cor_com
-            G.nodes[node]['community'] = i + 1
-
-    nodes_agraph, edges_agraph = [], []
-    for node, attrs in G.nodes(data=True):
-        tipo = attrs.get('tipo', 'Desconhecido')
-        grau_atual = grau_abs.get(node, 0)
-        
-        if metodo_tamanho == "Grau Absoluto": tam = 10 + (grau_atual / max_abs) * 40
-        elif metodo_tamanho == "Degree Centrality": tam = 10 + (deg_cent.get(node, 0) / max_deg) * 40
-        elif metodo_tamanho == "Betweenness": tam = 10 + (bet_cent.get(node, 0) / max_bet) * 40
-        else: tam = 20
-        
-        cor_final = attrs.get('color', ('#E74C3C' if tipo == 'Documento' else '#F39C12' if tipo == 'Orientador' else '#2ECC71'))
-        formato = 'star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'dot'
-        
-# Configuração da fonte com contorno (Halo) para leitura em Light/Dark Mode
-        config_fonte = {"color": "black", "strokeWidth": 3, "strokeColor": "white"}
-        
-        nodes_agraph.append(Node(
-            id=node, 
-            label=attrs['label'], 
-            size=tam, 
-            color=cor_final, 
-            shape=formato, 
-            title=f"{node}\nTipo: {tipo}",
-            font=config_fonte # <--- ADICIONADO AQUI
-        ))
-    for u, v in G.edges():
-        # Cor neutra universal e linha levemente mais espessa para visualização em ambos os temas
-        edges_agraph.append(Edge(source=u, target=v, color="#95A5A6", width=0.8))
-
-    return nodes_agraph, edges_agraph, legendas_comunidades, G
-
-def obter_frequencias_texto(df_hist, fonte_nuvem):
-    if fonte_nuvem == "Conceitos (Palavras-chave)":
-        lista_c = []
-        for lst in df_hist['palavras_chave']: lista_c.extend(lst)
-        return dict(Counter(lista_c).most_common(100))
-    else:
-        textos = df_hist.get('resumo', pd.Series()).dropna().astype(str).tolist() if fonte_nuvem == "Resumos (Abstracts)" else df_hist['titulo'].dropna().astype(str).tolist()
-        texto_completo = " ".join(textos).lower()
-        texto_completo = re.sub(r'[^\w\s]', '', texto_completo)
-        palavras = texto_completo.split()
-        stopwords_pt = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta'])
-        palavras_limpas = [p for p in palavras if p not in stopwords_pt and len(p) > 2]
-        return dict(Counter(palavras_limpas).most_common(100))
-
-def renderizar_nuvem_interativa_html(word_freq_dict):
-    data_js = json.dumps([{"name": k, "value": v} for k, v in word_freq_dict.items()])
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
-    </head>
-    <body style="margin:0; padding:0; background-color:transparent;">
-        <div id="main" style="width:100%; height:450px;"></div>
-        <script>
-            var chart = echarts.init(document.getElementById('main'));
-            var option = {{ tooltip: {{ show: true }}, series: [{{ type: 'wordCloud', shape: 'circle', sizeRange: [14, 70], textStyle: {{ fontFamily: 'sans-serif', fontWeight: 'bold', color: function () {{ return 'rgb(' + [Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100), Math.round(Math.random() * 150 + 100)].join(',') + ')'; }} }}, data: {data_js} }}] }};
-            chart.setOption(option);
-            window.onresize = chart.resize;
-        </script>
-    </body>
-    </html>
-    """
-
-@st.cache_resource
-def gerar_nodos_coocorrencia_agraph(dados_recorte, min_coocorrencia=1):
-    G = nx.Graph()
-    for d in dados_recorte:
-        pks = d.get('palavras_chave', [])
-        for pk in pks:
-            if G.has_node(pk): G.nodes[pk]['count'] += 1
-            else: G.add_node(pk, count=1, tipo='Conceito')
-        for pk1, pk2 in itertools.combinations(pks, 2):
-            if G.has_edge(pk1, pk2): G[pk1][pk2]['weight'] += 1
-            else: G.add_edge(pk1, pk2, weight=1)
-
-    G.remove_edges_from([(u, v) for u, v, attrs in G.edges(data=True) if attrs['weight'] < min_coocorrencia])
-    G.remove_nodes_from(list(nx.isolates(G)))
-
-    nodes, edges = [], []
-    
-    # Configuração da fonte com contorno (Halo)
-    config_fonte = {"color": "black", "strokeWidth": 3, "strokeColor": "white"}
-    
-    for node, attrs in G.nodes(data=True):
-        tam = min(10 + (attrs['count'] * 1.5), 50)
-        nodes.append(Node(
-            id=node, 
-            label=node, 
-            size=tam, 
-            color='#2ECC71', 
-            shape='dot', 
-            title=f"{node}\nOcorrências: {attrs['count']}",
-            font=config_fonte # <--- ADICIONADO AQUI
-        ))
-
-    for u, v, attrs in G.edges(data=True):
-        # Transparência ajustada (150,150,150) garante contraste no preto (#1E1E1E) e no branco (#FFFFFF)
-        edges.append(Edge(source=u, target=v, width=attrs['weight']*0.5, color="rgba(150, 150, 150, 0.6)", title=f"Co-ocorrências: {attrs['weight']}"))
-
-    return nodes, edges
-
-@st.cache_data
-def preparar_csv_exportacao(dados):
-    df = pd.DataFrame(dados)
-    for col in ['autores', 'co_orientadores', 'palavras_chave']:
-        if col in df.columns: df[col] = df[col].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
-    return df.to_csv(index=False).encode('utf-8')
-
-@st.cache_data
-def calcular_metricas_complexas(dados):
-    G = nx.Graph()
-    for d in dados:
-        doc = d.get('titulo')
-        if not doc: continue
-        G.add_node(doc, tipo='Documento')
-        for a in d.get('autores', []): G.add_edge(doc, a)
-        ori = d.get('orientador')
-        if ori: G.add_edge(doc, ori)
-        for pk in d.get('palavras_chave', []): G.add_edge(doc, pk)
-
-    if G.number_of_nodes() == 0: return {}
-
-    densidade = nx.density(G)
-    graus = [d for n, d in G.degree()]
-    links_stats = {'media': np.mean(graus), 'min': np.min(graus), 'max': np.max(graus), 'std': np.std(graus)}
-    eficiencia = nx.global_efficiency(G)
-    redundancia = 1 - eficiencia 
-    pk = np.array(nx.degree_histogram(G))
-    pk = pk / pk.sum()
-    pk = pk[pk > 0]
-    entropia = -np.sum(pk * np.log2(pk))
-    clustering = nx.average_clustering(G)
-    pagerank_dict = nx.pagerank(G)
-    eigen_dict = nx.eigenvector_centrality(G, max_iter=1000, weight=None)
-    constraint_dict = nx.constraint(G) 
-
-    return {
-        'densidade': densidade, 'links': links_stats, 'eficiencia': eficiencia, 'redundancia': redundancia,
-        'entropia': entropia, 'clustering': clustering, 'pagerank_avg': np.mean(list(pagerank_dict.values())),
-        'eigen_avg': np.mean(list(eigen_dict.values())), 'constraint_avg': np.mean(list(constraint_dict.values())),
-        'n_nos': G.number_of_nodes()
-    }
-
-def preparar_exportacao_grafo(G, formato):
-    output = io.BytesIO()
-    G_export = G.copy()
-    if formato == "GEXF (Gephi)":
-        nx.write_gexf(G_export, output, encoding='utf-8')
-        return output.getvalue(), "grafo_ufsc.gexf"
-    elif formato == "GraphML":
-        nx.write_graphml(G_export, output, encoding='utf-8')
-        return output.getvalue(), "grafo_ufsc.graphml"
-    elif formato == "JSON (Node-Link)":
-        data = nx.node_link_data(G_export)
-        return json.dumps(data, ensure_ascii=False).encode('utf-8'), "grafo_ufsc.json"
-
 
 # =========================================================================
 # CABEÇALHO GLOBAL E MÉTRICAS ECOLÓGICAS
@@ -307,8 +91,7 @@ st.title("🔭 Exploração Global do Conhecimento")
 st.subheader(f"Base de Dados: {st.session_state.get('nome_programa', 'N/A')}")
 st.markdown("---")
 
-# Métricas no topo, fora das abas, pois servem de panorama para tudo
-st.markdown("### 🧬 Métricas de Ecologia Profunda (SNA Avançado)")
+st.markdown("### 🧬 Métricas de Redes Complexas Básicas")
 m_sna = calcular_metricas_complexas(dados_completos)
 
 if m_sna:
@@ -337,10 +120,10 @@ if m_sna:
             c_i3.metric("Restrição (Burt)", f"{m_sna['constraint_avg']:.4f}")
             c_i4.metric("Redundância", f"{m_sna['redundancia']:.4f}")
 
-with st.expander("📚 Glossário de Métricas de Ecologia do Conhecimento"):
+with st.expander("📚 Glossário de Métricas Básicas"):
     st.markdown("""
     ### Topologia e Fluxo
-    * **Densidade:** Proporção de conexões reais frente às possíveis. $D = \\frac{2|E|}{|V|(|V|-1)}$. Indica quão "povoada" está a rede.
+    * **Densidade:** Proporção de conexões reais frente às possíveis. Indica quão "povoada" está a rede.
     * **Eficiência:** Mede quão fácil a informação viaja. Redes eficientes têm caminhos curtos entre quaisquer dois nós.
     * **Entropia da Rede ($H$):** Mede a diversidade e incerteza da distribuição de conexões. Uma entropia alta indica uma ecologia complexa e menos previsível.
     ### Centralidade e Poder
@@ -350,6 +133,82 @@ with st.expander("📚 Glossário de Métricas de Ecologia do Conhecimento"):
     ### Estrutura de Agrupamento
     * **Coeficiente de Agrupamento (Clustering):** Mede a probabilidade de dois vizinhos de um nó também estarem conectados entre si (formação de "bolhas").
     * **Redundância:** Indica o excesso de caminhos para a mesma informação. É o inverso da eficiência na otimização de fluxos.
+    """)
+
+st.markdown("---")
+
+# ====================================================================
+# 🧬 MÉTRICAS DE ECOLOGIA PROFUNDA (MATURIDADE DA REDE)
+# ====================================================================
+st.header("🧬 Métricas de Ecologia Profunda (SNA Avançado)")
+st.markdown("Diagnóstico estrutural e físico da maturidade do ecossistema de conhecimento.")
+
+with st.spinner("Calculando leis de escala e correlações topológicas..."):
+    # Necessário calcular o SNA global primeiro para passar como parâmetro
+    sna_global = calcular_sna_global(dados_completos)
+    maturidade = calcular_maturidade_rede(dados_completos, sna_global)
+
+# Painel de KPIs Avançados
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+with col_m1:
+    gamma = maturidade['Gamma']
+    # Lógica de status: Ideal entre 2 e 3
+    if 2.0 <= gamma <= 3.0: status_g = "🟢 Ecossistema Saudável (Livre de Escala)"
+    elif gamma < 2.0: status_g = "🔴 Alta Monopolização"
+    else: status_g = "🟡 Rede Fragmentada (Aleatória)"
+    
+    st.metric("Lei de Potência (γ)", f"{gamma:.2f}", status_g, delta_color="off")
+
+with col_m2:
+    spearman = maturidade['Spearman']
+    # Lógica: Se 1.0 = Engessado, Se < 0.9 = Inovador (Brokers)
+    if spearman > 0.95: status_s = "🔴 Hierarquia Rígida"
+    elif spearman < 0.85: status_s = "🟢 Alto Fator de Inovação (Brokers)"
+    else: status_s = "🟡 Equilíbrio Padrão"
+    
+    st.metric("Correlação de Spearman (ρ)", f"{spearman:.2f}", status_s, delta_color="off")
+
+with col_m3:
+    assort = maturidade['Assortatividade']
+    # Assortatividade: > 0 = Panelinha, < 0 = Inclusão/Expansão
+    if assort > 0.1: status_a = "🟡 Endogâmica (Panelinhas)"
+    elif assort < -0.1: status_a = "🟢 Expansiva / Interdisciplinar"
+    else: status_a = "⚪ Estrutura Neutra"
+    
+    st.metric("Assortatividade (r)", f"{assort:.2f}", status_a, delta_color="off")
+
+with col_m4:
+    rc = maturidade['Rich_Club']
+    # Rich-club probabilidade
+    if rc > 0.3: status_rc = "🟢 Elite Coesa e Colaborativa"
+    elif rc < 0.1: status_rc = "🔴 Hubs Isolados (Silos)"
+    else: status_rc = "🟡 Colaboração Moderada"
+    
+    st.metric("Coeficiente Rich-Club (Φ)", f"{rc:.2%}", status_rc, delta_color="off")
+
+
+# Glossário Explicativo
+with st.expander("📖 Glossário de Maturidade: Como interpretar estes números?"):
+    st.markdown("""
+    Este painel mede a **Resiliência e o Fluxo de Conhecimento** baseados na física de Redes Complexas.
+
+    **1. Lei de Potência (γ - Gamma): Mede o Equilíbrio de Liderança**
+    A rede segue uma equação matemática $P(k) \sim k^{-\gamma}$.
+    * **O que significa?** Avalia a dependência da rede em relação aos seus maiores pesquisadores/temas. 
+    * **Diagnóstico:** O cenário "Ecossistema Saudável" (γ entre 2 e 3) indica que existem grandes líderes de pesquisa (hubs), mas o programa permite o surgimento de novos pesquisadores. Valores abaixo de 2 indicam uma rede monopolizada por pouquíssimos indivíduos.
+
+    **2. Correlação de Spearman (ρ): Mede a Presença de Inovadores (Brokers)**
+    Analisa a curva não-linear entre a quantidade de conexões (Grau) e o poder de ponte (Betweenness).
+    * **O que significa?** Se a correlação for perto de **1.0**, as únicas "pontes" do programa são os grandes orientadores com centenas de alunos. Se a correlação for menor, o status é **Verde (Alto Fator de Inovação)**, pois significa que existem pesquisadores "iniciantes" ou temas de nicho atuando como pontes secretas (*Brokers*) unindo áreas que normalmente não conversariam.
+
+    **3. Assortatividade (r): Mede a "Panelinha" vs "Interdisciplinaridade"**
+    * **O que significa?** É a tendência dos nós se conectarem com nós parecidos. 
+    * **Diagnóstico:** Valores muito positivos ($r > 0$) indicam **Endogenia/Panelinha**: os gigantes só trabalham com os gigantes, e os iniciantes só trabalham com os iniciantes. Valores negativos ($r < 0$) são excelentes para PPGs, pois caracterizam uma rede disassortativa, onde orientadores gigantes trazem alunos isolados para o centro da rede.
+
+    **4. Coeficiente Rich-Club (Φ): Mede a Coesão da Elite**
+    * **O que significa?** Avalia exclusivamente a "elite" do programa (o top 20% com mais conexões). Eles competem em silos ou colaboram?
+    * **Diagnóstico:** Se Φ é alto, a "elite é coesa": os maiores orientadores participam das bancas uns dos outros e fundem os grandes temas. Se for baixo, indica que o PPG possui "caciques" que não dialogam entre si, gerando fragmentação política e científica.
     """)
 
 st.markdown("---")

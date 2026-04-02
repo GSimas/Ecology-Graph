@@ -16,8 +16,10 @@ import scipy as sp
 import io
 import itertools
 import datetime
+import time
 
 from backend import (
+    gerar_grafo_ecologia_memes_agraph,
     calcular_sna_global,
     calcular_maturidade_rede,
     renderizar_nuvem_interativa_html_exploracao,
@@ -36,7 +38,8 @@ from backend import (
     calcular_burt,
     preparar_sankey,
     calcular_metricas_memeticas,
-    preparar_sankey_temporal
+    preparar_sankey_temporal,
+    processar_lote_ontologia
 )
 
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
@@ -298,7 +301,15 @@ with tab_exploracao:
                     data_json, nome_json = preparar_exportacao_grafo(G_para_exportar, "JSON (Node-Link)")
                     col_ex3.download_button("🌐 Exportar JSON Web", data=data_json, file_name=nome_json, use_container_width=True)
 
-                config = Config(width="100%", height=650, directed=False, physics=True, nodeHighlightBehavior=True, highlightColor="#F1C40F")
+                config = Config(
+                    width="100%", 
+                    height=650, 
+                    directed=False, 
+                    physics=True, 
+                    nodeHighlightBehavior=True, 
+                    highlightColor="#F1C40F",
+                    interaction={"navigationButtons": True, "keyboard": True}
+                )
                 agraph(nodes=st.session_state['graf_glob_nodes'], edges=st.session_state['graf_glob_edges'], config=config)
         else:
             st.warning("Nenhum documento selecionado para o Grafo.")
@@ -633,13 +644,134 @@ with tab_sankey:
         st.warning("Por favor, selecione um intervalo de datas (início e fim) para os três períodos.")
 
 with tab_memes:
-    st.markdown("### A Genética das Ideias (Teoria Memética)")
-    st.write("Análise do ciclo de vida dos conceitos como entidades replicantes (memes) extraídos das palavras-chave e dos títulos das teses.")
+    st.markdown("### A Genética das Ideias")
+    st.write("Analise o ciclo de vida de teorias, modelos e ferramentas que se replicam pelo programa.")
     
-    df_fecundidade, df_longevidade, mortos, vivos, df_mortos, df_vivos = calcular_metricas_memeticas(df_geral)
+    # --- MÓDULO DE EXTRAÇÃO ONTOLÓGICA (LLM) ---
+    st.markdown("#### 🤖 Mineração de Artefatos (Google Gemini)")
+    st.caption("A API lerá os resumos para extrair construtos reais (Artefatos, Teorias e Métodos), superando a limitação das palavras-chave genéricas.")
+    
+    # Conta quantos já foram processados
+    qtd_com_ontologia = sum(1 for d in dados_gerais if 'ontologia_ia' in d and d['ontologia_ia'])
+    qtd_total_validos = sum(1 for d in dados_gerais if d.get('resumo') and str(d.get('resumo')).strip() != "")
+    
+    col_ai1, col_ai2 = st.columns([2, 1])
+    with col_ai1:
+        st.progress(qtd_com_ontologia / max(qtd_total_validos, 1), text=f"Progresso da Base: {qtd_com_ontologia} de {qtd_total_validos} resumos lidos pela IA.")
+        
+    with col_ai2:
+        # CORREÇÃO: Adicionada a 'key' para evitar o erro de StreamlitDuplicateElementId
+        tamanho_lote = st.selectbox(
+            "Tamanho do Lote:", 
+            [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000], 
+            index=1, 
+            help="Pequenos lotes evitam que o limite da API gratuita estoure.",
+            key="lote_ia_memetica" 
+        )
+        btn_iniciar_ia = st.button("🚀 Processar Próximo Lote", type="primary", use_container_width=True)
+        
+    if btn_iniciar_ia:
+        if qtd_com_ontologia >= qtd_total_validos:
+            st.success("Toda a base já foi processada pela IA!")
+        else:
+            barra_ia = st.progress(0)
+            status_ia = st.empty()
+            
+            # Chama a função que processa e dorme para respeitar os limites
+            proc, faltam = processar_lote_ontologia(dados_gerais, tamanho_lote, barra_ia, status_ia)
+            
+            # Atualiza o session_state para garantir que a memória não se perca se mudar de aba
+            st.session_state['dados_completos'] = dados_gerais 
+            
+            status_ia.success(f"Lote concluído! {proc} documentos enriquecidos. Faltam {faltam} na fila.")
+            time.sleep(2)
+            st.rerun() # Recarrega a página para atualizar a barra de progresso global
+            
+    st.markdown("---")
+
+    # --- TABELA DE VISUALIZAÇÃO E EXPORTAÇÃO DA IA (BLINDADA) ---
+    st.markdown("#### 🗂️ Catálogo de Artefatos Extraídos (Base de Conhecimento)")
+    st.caption("Verifique e baixe o que a inteligência artificial conseguiu encontrar nos documentos processados até o momento.")
+
+    # Constrói os dados da tabela
+    dados_ontologia = []
+    for d in dados_gerais:
+        if 'ontologia_ia' in d and d['ontologia_ia']:
+            onto = d['ontologia_ia']
+            
+            # Blindagem: se por acaso a IA salvou como string (erro de parse), tenta consertar
+            if isinstance(onto, str):
+                try:
+                    onto = json.loads(onto)
+                except:
+                    continue # Pula se estiver completamente quebrado
+                    
+            if isinstance(onto, dict):
+                # Conversão segura de listas para strings na tabela
+                def safe_join(item):
+                    if isinstance(item, list): return ", ".join([str(x) for x in item])
+                    return str(item) if item else ""
+                    
+                dados_ontologia.append({
+                    'Ano': d.get('ano', 'N/A'),
+                    'Título': d.get('titulo', 'Sem Título'),
+                    'Teorias e Modelos': safe_join(onto.get('teorias_e_modelos', [])),
+                    'Ferramentas e Artefatos': safe_join(onto.get('ferramentas_e_artefatos', [])),
+                    'Métodos e Técnicas': safe_join(onto.get('metodos_e_tecnicas', []))
+                })
+
+    if dados_ontologia:
+        df_onto = pd.DataFrame(dados_ontologia)
+        
+        # Mostra a tabela de forma amigável
+        st.dataframe(df_onto, use_container_width=True, hide_index=True, height=250)
+        
+        # Cria e injeta o botão de download do CSV
+        csv_onto = df_onto.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Exportar Catálogo Ontológico (CSV)",
+            data=csv_onto,
+            file_name="catalogo_ontologico_ia.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="btn_export_onto"
+        )
+    else:
+        st.info("💡 A base ainda não possui ontologia estruturada. Processe um lote na seção acima.")
+
+    st.markdown("---")
+
+    # --- MÉTRICAS TRADICIONAIS DE MEMÉTICA COM TOGGLE ---
+    st.markdown("### A Genética das Ideias (Visão Geral de Propagação)")
+    
+    # NOVO: Chave seletora para o usuário escolher o prisma da análise
+    fonte_selecionada = st.radio(
+        "Selecione o prisma da análise de propagação memética:", 
+        ["Palavras-chave e Títulos (Tradicional)", "Artefatos Extraídos pela IA (Ontologia)"],
+        horizontal=True,
+        key="seletor_fonte_memes"
+    )
+    
+    fonte_param = "Artefatos Extraídos" if "IA" in fonte_selecionada else "Palavras-chave"
+    
+    df_fecundidade, df_longevidade, mortos, vivos, df_mortos, df_vivos = calcular_metricas_memeticas(
+        df_geral, 
+        fonte_memes=fonte_param
+    )
+    
+    # Passamos o parâmetro escolhido para a função do backend
+    mapa_atual = st.session_state.get('mapa_vetorial') if fonte_param == "Artefatos Extraídos" else None
+    
+    df_fecundidade, df_longevidade, mortos, vivos, df_mortos, df_vivos = calcular_metricas_memeticas(
+        df_geral, 
+        fonte_memes=fonte_param 
+    )
     
     if df_fecundidade.empty:
-        st.warning("Dados insuficientes para calcular métricas meméticas.")
+        if fonte_param == "Artefatos Extraídos":
+            st.warning("⚠️ Não há artefatos suficientes extraídos para gerar os gráficos. Gere a ontologia usando o botão de processamento acima.")
+        else:
+            st.warning("⚠️ Dados insuficientes para calcular métricas meméticas.")
     else:
         col1, col2 = st.columns([1, 2])
         
@@ -653,15 +785,16 @@ with tab_memes:
                 hole=.6,
                 marker_colors=['#E74C3C', '#2ECC71']
             )])
+            # Atualizado para "streamlit" para suportar Light/Dark mode
             fig_mortalidade.update_layout(
-                template="plotly_dark", 
+                template="streamlit", 
                 showlegend=True,
                 legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
                 margin=dict(t=20, b=20, l=20, r=20)
             )
-            st.plotly_chart(fig_mortalidade, use_container_width=True)
+            st.plotly_chart(fig_mortalidade, use_container_width=True, theme="streamlit")
             
-            with st.expander("👁️ Ver Catálogo de Memes (Vivos vs Mortos)", expanded=False):
+            with st.expander("👁️ Ver Catálogo Completo", expanded=False):
                 st.write("**🟢 Memes Sobreviventes (Top Fecundidade)**")
                 st.dataframe(df_vivos, use_container_width=True, hide_index=True, height=250)
                 
@@ -671,7 +804,7 @@ with tab_memes:
             
         with col2:
             st.markdown("#### Os Super-Memes (Maior Fecundidade)")
-            st.caption("Conceitos com maior capacidade de replicação (espalhamento) na história do programa.")
+            st.caption("Os construtos com maior espalhamento pela história do programa.")
             
             top_fecundos = df_vivos.head(15).rename(columns={'Memes Sobreviventes': 'meme', 'Nº de Aparições': 'fecundidade'})
             
@@ -683,20 +816,21 @@ with tab_memes:
                 color='fecundidade',
                 color_continuous_scale='Viridis'
             )
+            # Atualizado para "streamlit" para suportar Light/Dark mode
             fig_fecundidade.update_layout(
-                template="plotly_dark", 
+                template="streamlit", 
                 yaxis={'categoryorder':'total ascending'},
                 xaxis_title="Nº de Teses/Dissertações Diferentes",
                 yaxis_title="",
                 coloraxis_showscale=False
             )
-            st.plotly_chart(fig_fecundidade, use_container_width=True)
+            st.plotly_chart(fig_fecundidade, use_container_width=True, theme="streamlit")
 
         st.markdown("---")
         st.markdown("#### Tempo de Meia-Vida do Conhecimento (Longevidade)")
-        st.caption("Analisa a 'idade' dos conceitos considerando sua presença em Títulos e Palavras-chave. Memes com vida longa indicam pilares estruturais; memes recentes podem ser a vanguarda tecnológica.")
+        st.caption("Analisa a 'idade' de sobrevivência. Memes com vida longa indicam pilares estruturais.")
         
-        min_aparicoes_long = st.slider("Filtrar por nº mínimo de replicações (para ver apenas memes consistentes):", min_value=2, max_value=50, value=5)
+        min_aparicoes_long = st.slider("Filtrar por nº mínimo de replicações:", min_value=2, max_value=50, value=2, key="slider_longevidade_memes")
         
         df_long_filtrado = df_longevidade[df_longevidade['total_aparicoes'] >= min_aparicoes_long].copy()
         
@@ -717,7 +851,104 @@ with tab_memes:
                     "meme": "Meme Acadêmico"
                 }
             )
-            fig_longevidade.update_layout(template="plotly_dark", height=500)
-            st.plotly_chart(fig_longevidade, use_container_width=True)
+            # Atualizado para "streamlit" para suportar Light/Dark mode
+            fig_longevidade.update_layout(template="streamlit", height=500)
+            st.plotly_chart(fig_longevidade, use_container_width=True, theme="streamlit")
         else:
-            st.info("Nenhum meme encontrado com essa taxa de replicação mínima. Reduza o filtro acima.")
+            st.info("Nenhum meme encontrado com essa taxa de replicação mínima.")
+        
+        # --- BLOCO UNIFICADO: ECOLOGIA SNA (MEMES E ARTEFATOS) ---
+        st.markdown("---")
+        
+        # Textos dinâmicos dependendo do que o usuário escolheu no rádio lá no topo
+        if fonte_param == "Artefatos Extraídos":
+            st.markdown("#### 🕸️ Ecologia dos Artefatos Ontológicos (SNA)")
+            st.caption("Analise as conexões e a maturidade da rede formada exclusivamente pelos artefatos extraídos pela IA.")
+        else:
+            st.markdown("#### 🕸️ Ecologia Memética Tradicional (SNA)")
+            st.caption("Analise as conexões e a maturidade da rede formada pelas palavras-chave e termos isolados dos títulos.")
+        
+        # O slider agora fica disponível para ambos, o nome da variável não importa, usamos um genérico
+        min_co_memes = st.slider("Filtro de Co-ocorrência Mínima (Remover ruídos visuais):", min_value=1, max_value=10, value=3, key="slider_co_ecologia")
+        
+        with st.spinner(f"Construindo rede de {fonte_param} e calculando topologia global..."):
+            # Importa a nossa nova função ambidestra!
+            from backend import gerar_grafo_ecologia_memes_agraph
+            nodes_ecol, edges_ecol, df_nos_ecol, m_sna, maturidade = gerar_grafo_ecologia_memes_agraph(
+                dados_gerais, 
+                min_coocorrencia=min_co_memes, 
+                fonte_memes=fonte_param # <--- Passa a escolha do usuário para o backend
+            )
+            
+        if nodes_ecol:
+            # 1. PAINEL DE MÉTRICAS GLOBAIS DA REDE
+            st.markdown("##### 🧬 Métricas de Redes Complexas")
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            col_s1.metric("Densidade da Rede", f"{m_sna['densidade']:.5f}")
+            col_s2.metric("Eficiência Global", f"{m_sna['eficiencia']:.4f}")
+            col_s3.metric("Entropia (H)", f"{m_sna['entropia']:.2f} bits")
+            col_s4.metric("Clustering Médio", f"{m_sna['clustering']:.4f}")
+
+            with st.expander("📊 Estatísticas de Conectividade & Influência (Médias)"):
+                col_exp1, col_exp2 = st.columns(2)
+                with col_exp1:
+                    st.markdown("**Conectividade (Links por Nó)**")
+                    c_l1, c_l2 = st.columns(2)
+                    c_l1.metric("Média de Links", f"{m_sna['links_mean']:.2f}")
+                    c_l2.metric("Desvio Padrão", f"{m_sna['links_std']:.2f}")
+                    c_l3, c_l4 = st.columns(2)
+                    c_l3.metric("Mínimo", int(m_sna['links_min']))
+                    c_l4.metric("Máximo", int(m_sna['links_max']))
+                with col_exp2:
+                    st.markdown("**Influência Estrutural**")
+                    c_i1, c_i2 = st.columns(2)
+                    c_i1.metric("PageRank Médio", f"{m_sna['pr_avg']:.6f}")
+                    c_i2.metric("Eigenvector Médio", f"{m_sna['ev_avg']:.6f}")
+                    c_i3, c_i4 = st.columns(2)
+                    c_i3.metric("Restrição (Burt)", f"{m_sna['constraint_avg']:.4f}")
+                    c_i4.metric("Redundância", f"{m_sna['redundancia']:.4f}")
+
+            st.markdown("##### 🧬 Métricas de Ecologia Profunda (SNA Avançado)")
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                g_val = maturidade['gamma']
+                status_g = "🟢 Saudável" if 2.0 <= g_val <= 3.0 else ("🔴 Monopolizada" if g_val < 2.0 else "🟡 Fragmentada")
+                st.metric("Lei de Potência (γ)", f"{g_val:.2f}", status_g, delta_color="off")
+            with col_m2:
+                s_val = maturidade['spearman']
+                status_s = "🔴 Hierarquia Rígida" if s_val > 0.95 else ("🟢 Inovação (Brokers)" if s_val < 0.85 else "🟡 Equilíbrio")
+                st.metric("Correlação de Spearman (ρ)", f"{s_val:.2f}", status_s, delta_color="off")
+            with col_m3:
+                a_val = maturidade['assortatividade']
+                status_a = "🟡 Endogâmica" if a_val > 0.1 else ("🟢 Expansiva" if a_val < -0.1 else "⚪ Neutra")
+                st.metric("Assortatividade (r)", f"{a_val:.2f}", status_a, delta_color="off")
+            with col_m4:
+                rc_val = maturidade['rich_club']
+                status_rc = "🟢 Elite Coesa" if rc_val > 0.3 else ("🔴 Hubs Isolados" if rc_val < 0.1 else "🟡 Moderada")
+                st.metric("Coeficiente Rich-Club (Φ)", f"{rc_val:.2%}", status_rc, delta_color="off")
+
+            # 2. GRAFO INTERATIVO
+            st.markdown("##### 🌌 Grafo Interativo")
+            from streamlit_agraph import agraph, Config
+            config_art = Config(
+                width="100%", height=650, directed=False, physics=True, collapsible=False,
+                interaction={
+                    "navigationButtons": True, "keyboard": True, "hover": True, 
+                    "hoverConnectedEdges": True, "selectConnectedEdges": True
+                }
+            )
+            agraph(nodes=nodes_ecol, edges=edges_ecol, config=config_art)
+
+            # 3. TABELA DE MÉTRICAS DOS NÓS
+            st.markdown("##### 📊 Tabela de Centralidade Global")
+            st.caption("Classificação do poder de influência e intermediação de cada termo/artefato no ecossistema completo.")
+            
+            df_nos_exibicao = df_nos_ecol.copy()
+            for col in ['Grau (Degree)', 'Betweenness', 'Closeness']:
+                if col in df_nos_exibicao.columns:
+                    df_nos_exibicao[col] = df_nos_exibicao[col].apply(lambda x: f"{x:.4f}")
+            
+            st.dataframe(df_nos_exibicao, use_container_width=True, hide_index=True)
+
+        else:
+            st.info("Não há conexões suficientes neste conjunto de dados.")

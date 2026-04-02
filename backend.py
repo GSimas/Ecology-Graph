@@ -21,7 +21,301 @@ import numpy as np
 from scipy import stats
 import io
 import itertools
+import time
+import scipy.stats as sps
 
+
+@st.cache_data(show_spinner=False)
+def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_memes="Artefatos Extraídos"):
+    import networkx as nx
+    import itertools
+    from streamlit_agraph import Node, Edge
+    import pandas as pd
+    import numpy as np
+    import scipy.stats as sps
+    import re
+    import unicodedata
+    
+    # Stopwords para limpar os títulos no método Tradicional
+    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+
+    def remover_acentos(texto):
+        if not isinstance(texto, str): return ""
+        return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+    stopwords_norm = {remover_acentos(w) for w in stopwords}
+    
+    G_completo = nx.Graph()
+    mapa_docs = {}
+    
+    # 1. Constrói a Rede de Co-ocorrência Integral
+    for d in dados_lista:
+        titulo = d.get('titulo', 'Sem Título')
+        artefatos_doc = []
+        
+        # LÓGICA A: Inteligência Artificial (Artefatos)
+        if fonte_memes == "Artefatos Extraídos":
+            onto = d.get('ontologia_ia', {})
+            if isinstance(onto, dict):
+                teorias = onto.get('teorias_e_modelos', [])
+                ferramentas = onto.get('ferramentas_e_artefatos', [])
+                metodos = onto.get('metodos_e_tecnicas', [])
+                
+                def safe_list(l): return [str(x).strip().title() for x in l if str(x).strip()] if isinstance(l, list) else []
+                artefatos_doc = list(set(safe_list(teorias) + safe_list(ferramentas) + safe_list(metodos)))
+                
+        # LÓGICA B: Tradicional (Palavras-chave e Títulos)
+        else:
+            memes = set()
+            pks = d.get('palavras_chave', [])
+            if not isinstance(pks, list): pks = [pks] if pd.notna(pks) else []
+            memes.update([str(p).strip().title() for p in pks if str(p).strip()])
+            
+            titulo_norm = remover_acentos(str(titulo).lower())
+            palavras_titulo = re.findall(r'\b[a-z]{3,}\b', titulo_norm)
+            memes.update([p.title() for p in palavras_titulo if p not in stopwords_norm])
+            artefatos_doc = list(memes)
+            
+        # Rastreia os documentos associados a cada termo
+        for a in artefatos_doc:
+            if a not in mapa_docs: mapa_docs[a] = set()
+            mapa_docs[a].add(titulo)
+            
+        if len(artefatos_doc) > 1:
+            for a1, a2 in itertools.combinations(artefatos_doc, 2):
+                if G_completo.has_edge(a1, a2): G_completo[a1][a2]['weight'] += 1
+                else: G_completo.add_edge(a1, a2, weight=1)
+        elif len(artefatos_doc) == 1:
+            G_completo.add_node(artefatos_doc[0])
+            
+    # Trava de segurança: Se não houver nada, retorna vazio sem quebrar
+    if G_completo.number_of_nodes() == 0:
+        return [], [], pd.DataFrame(), {}, {}
+
+    # 2. MATEMÁTICA DA REDE COMPLETA (Estatísticas Globais)
+    deg_cent_full = nx.degree_centrality(G_completo)
+    bet_cent_full = nx.betweenness_centrality(G_completo, weight='weight')
+    clo_cent_full = nx.closeness_centrality(G_completo)
+    grau_abs_full = dict(G_completo.degree())
+    
+    label_coluna = "Artefato (IA)" if fonte_memes == "Artefatos Extraídos" else "Termo/Conceito (Tradicional)"
+    
+    df_nos = pd.DataFrame({
+        label_coluna: list(G_completo.nodes()),
+        'Grau Absoluto': [grau_abs_full.get(n, 0) for n in G_completo.nodes()],
+        'Grau (Degree)': [deg_cent_full.get(n, 0) for n in G_completo.nodes()],
+        'Betweenness': [bet_cent_full.get(n, 0) for n in G_completo.nodes()],
+        'Closeness': [clo_cent_full.get(n, 0) for n in G_completo.nodes()],
+        'Documentos Associados': [", ".join(list(mapa_docs.get(n, []))) for n in G_completo.nodes()]
+    }).sort_values('Grau Absoluto', ascending=False)
+    
+    # 3. MÉTRICAS TOTAIS (Cards)
+    degrees = list(grau_abs_full.values())
+    try: pr = nx.pagerank(G_completo, weight='weight')
+    except: pr = {n:0 for n in G_completo.nodes()}
+    
+    net_metrics = {
+        'densidade': nx.density(G_completo),
+        'eficiencia': nx.global_efficiency(G_completo),
+        'clustering': nx.average_clustering(G_completo, weight='weight'),
+        'links_mean': np.mean(degrees),
+        'links_std': np.std(degrees),
+        'links_min': np.min(degrees),
+        'links_max': np.max(degrees),
+        'pr_avg': np.mean(list(pr.values())),
+        'entropia': -sum((pd.Series(degrees).value_counts(normalize=True)) * np.log2(pd.Series(degrees).value_counts(normalize=True))),
+        'ev_avg': 0, 
+        'constraint_avg': 0,
+        'redundancia': 1 - nx.global_efficiency(G_completo)
+    }
+    
+    # 4. FILTRO DE EXIBIÇÃO VISUAL (Slider)
+    G_display = G_completo.copy()
+    edges_to_remove = [(u, v) for u, v, data in G_display.edges(data=True) if data['weight'] < min_coocorrencia]
+    G_display.remove_edges_from(edges_to_remove)
+    G_display.remove_nodes_from(list(nx.isolates(G_display)))
+
+    nodes, edges = [], []
+    max_grau_abs = max(degrees) if degrees else 1
+    
+    # Estilização Inteligente: IA é roxo, Tradicional é Verde
+    cor_base = "rgba(155, 89, 182, 0.4)" if fonte_memes == "Artefatos Extraídos" else "rgba(46, 204, 113, 0.4)"
+    cor_hover = "#F39C12" if fonte_memes == "Artefatos Extraídos" else "#27AE60"
+    
+    cor_dinamica_no = {
+        "background": cor_base, "border": cor_base,
+        "hover": {"background": cor_hover, "border": cor_hover},
+        "highlight": {"background": cor_hover, "border": cor_hover}
+    }
+    
+    for node in G_display.nodes():
+        tamanho = 15 + (grau_abs_full[node] / max_grau_abs) * 25
+        hover_text = f"🧬 Termo: {node}\n🔗 Grau Absoluto: {grau_abs_full[node]}\n🌉 Betweenness Global: {bet_cent_full[node]:.4f}"
+        
+        nodes.append(Node(
+            id=node, label=node, size=tamanho, title=hover_text, color=cor_dinamica_no, 
+            font={'color': 'white', 'strokeWidth': 4, 'strokeColor': '#1E1E1E'}
+        ))
+        
+    cor_dinamica_aresta = {"color": "rgba(127, 140, 141, 0.2)", "hover": cor_hover, "highlight": cor_hover}
+        
+    for u, v, data in G_display.edges(data=True):
+        edges.append(Edge(source=u, target=v, value=data['weight'], color=cor_dinamica_aresta))
+        
+    gamma = 1 + len(degrees) / sum(np.log(d / min(degrees)) for d in degrees) if min(degrees) > 0 else 0
+    spearman, _ = sps.spearmanr(list(deg_cent_full.values()), list(bet_cent_full.values()))
+    
+    net_maturity = {
+        'gamma': gamma,
+        'spearman': spearman if not np.isnan(spearman) else 0,
+        'assortatividade': nx.degree_assortativity_coefficient(G_completo),
+        'rich_club': 0 
+    }
+
+    return nodes, edges, df_nos, net_metrics, net_maturity
+    
+
+def configurar_gemini():
+    """Configura a chave da API puxando do cofre do Streamlit."""
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        return True
+    except Exception:
+        return False
+
+def extrair_artefatos_llm(titulo, resumo):
+    """Envia um prompt estruturado ao Gemini forçando um retorno em JSON."""
+    if not titulo or not resumo:
+        return None, "Documento sem resumo válido"
+        
+    prompt = f"""
+    Extraia as entidades específicas que foram objeto central de desenvolvimento, análise ou uso metodológico no texto abaixo.
+    Não extraia palavras genéricas. Busque ferramentas, métodos, algoritmos, frameworks ou teorias.
+    
+    REGRA CRÍTICA DE PADRONIZAÇÃO (NOME CANÔNICO):
+    Padronize os nomes encontrados similares para a sua forma mais comum, curta ou sigla.
+    Por exemplo: se o texto diz "Microscópio Eletrônico de Varredura" ou "Microscopia Eletrônica de Varredura", escolha apenas um nome e os agrupe.
+    Agrupe variações do mesmo conceito sob um único nome guarda-chuva consolidado.
+    
+    O RETORNO DEVE SER EXATAMENTE UM JSON COM AS SEGUINTES CHAVES:
+    {{
+        "teorias_e_modelos": ["teoria 1", "modelo A"],
+        "ferramentas_e_artefatos": ["ferramenta 1", "software B"],
+        "metodos_e_tecnicas": ["método 1", "técnica C"]
+    }}
+    Se não houver itens para uma categoria, retorne uma lista vazia [].
+    
+    Título: {titulo}
+    Resumo: {resumo}
+    """
+    
+    try:
+        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                response_mime_type="application/json",
+            )
+        )
+        
+        dicionario_ontologia = json.loads(response.text)
+        
+        if isinstance(dicionario_ontologia, list) and len(dicionario_ontologia) > 0 and isinstance(dicionario_ontologia[0], dict):
+            # Extraímos apenas o texto de dentro de cada 'entity' (ou qualquer chave que ela inventar)
+            lista_achatada = []
+            for item in dicionario_ontologia:
+                # Pega o primeiro valor de qualquer chave que existir no dicionário interno
+                valor = list(item.values())[0] if item.values() else None
+                if valor: lista_achatada.append(str(valor))
+            
+            dicionario_ontologia = {
+                'teorias_e_modelos': [],
+                'ferramentas_e_artefatos': lista_achatada,
+                'metodos_e_tecnicas': []
+            }
+
+        # CASO B: A IA mandou uma lista simples de strings ["A", "B"]
+        elif isinstance(dicionario_ontologia, list):
+            dicionario_ontologia = {
+                'teorias_e_modelos': [],
+                'ferramentas_e_artefatos': [str(x) for x in dicionario_ontologia],
+                'metodos_e_tecnicas': []
+            }
+            
+        # CASO C: Não veio um dicionário (prevenção total)
+        elif not isinstance(dicionario_ontologia, dict):
+            dicionario_ontologia = {}
+
+        # --- FIM DA BLINDAGEM ---
+            
+        # Garantir que as chaves padrão existam para o restante do código
+        for chave in ['teorias_e_modelos', 'ferramentas_e_artefatos', 'metodos_e_tecnicas']:
+            if chave not in dicionario_ontologia or not isinstance(dicionario_ontologia[chave], list):
+                dicionario_ontologia[chave] = []
+            
+        return dicionario_ontologia, None
+        
+    except Exception as e:
+        # Pega a mensagem exata de erro da Google (ex: API Limit, Erro de Auth, etc)
+        erro_msg = str(e)
+        if 'response' in locals() and hasattr(response, 'text'):
+            erro_msg += f" | Resposta bruta: {response.text[:100]}"
+        return None, erro_msg
+
+def processar_lote_ontologia(dados_completos, tamanho_lote=10, barra_progresso=None, status_texto=None):
+    """Processa o lote com cálculo de tempo estimado de conclusão (ETC)."""
+    if not configurar_gemini():
+        if status_texto: status_texto.error("Erro: GEMINI_API_KEY não encontrada nos secrets.")
+        return 0, sum(1 for d in dados_completos if 'ontologia_ia' not in d and d.get('resumo'))
+    
+    fila_processamento = [d for d in dados_completos if 'ontologia_ia' not in d and d.get('resumo') and str(d.get('resumo')).strip() != ""]
+    lote_atual = fila_processamento[:tamanho_lote]
+    
+    if not lote_atual:
+        return 0, len(fila_processamento)
+        
+    processados = 0
+    erros = []
+    tempo_inicio_lote = time.time() # Registro do início
+    
+    for i, doc in enumerate(lote_atual):
+        # --- CÁLCULO DE TEMPO ESTIMADO ---
+        if i > 0:
+            tempo_decorrido = time.time() - tempo_inicio_lote
+            media_por_doc = tempo_decorrido / i
+            docs_restantes = len(lote_atual) - i
+            eta_segundos = docs_restantes * media_por_doc
+            
+            minutos, segundos = divmod(int(eta_segundos), 60)
+            eta_str = f" | ⏳ Restam aprox. **{minutos}m {segundos}s**"
+        else:
+            eta_str = " | ⏳ Calculando tempo..."
+
+        if status_texto:
+            status_texto.markdown(f"🤖 Lendo {i+1}/{len(lote_atual)}: *{doc.get('titulo', '')[:50]}...*{eta_str}")
+        # ---------------------------------
+            
+        ontologia, erro = extrair_artefatos_llm(doc.get('titulo'), doc.get('resumo'))
+        
+        if ontologia:
+            doc['ontologia_ia'] = ontologia
+            processados += 1
+        elif erro:
+            erros.append(f"**{doc.get('titulo', '')[:30]}...**: {erro}")
+            
+        if barra_progresso:
+            barra_progresso.progress((i + 1) / len(lote_atual))
+            
+        # DELAY DE SEGURANÇA: 4 segundos entre requisições
+        if i < len(lote_atual) - 1:
+            time.sleep(4) 
+            
+    if erros and status_texto:
+        with st.expander(f"⚠️ {len(erros)} falhas na IA. Clique para ver."):
+            for e in erros[:10]: st.error(e)
+                
+    return processados, len(fila_processamento) - processados
 
 # --- FUNÇÕES DE BACK-END (AVANÇADO) ---
 @st.cache_data
@@ -133,7 +427,7 @@ def preparar_sankey(dados_lista, top_n=10):
     return nodes, df_fluxos['src'].map(mapping), df_fluxos['tgt'].map(mapping), df_fluxos['val']
 
 @st.cache_data
-def calcular_metricas_memeticas(df_base):
+def calcular_metricas_memeticas(df_base, fonte_memes="Palavras-chave"):
     import re
     import unicodedata 
     
@@ -149,15 +443,37 @@ def calcular_metricas_memeticas(df_base):
     stopwords_norm = {remover_acentos(w) for w in stopwords}
 
     def extrair_memes_completos(row):
-        pks = row.get('palavras_chave', [])
-        if not isinstance(pks, list):
-            pks = [pks] if pd.notna(pks) else []
-        memes = set([remover_acentos(str(p).lower().strip()) for p in pks if str(p).strip()])
+        memes = set()
         
-        titulo_norm = remover_acentos(str(row.get('titulo', '')).lower())
-        palavras_titulo = re.findall(r'\b[a-z]{3,}\b', titulo_norm)
-        memes.update([p for p in palavras_titulo if p not in stopwords_norm])
-        
+        # LÓGICA 1: Abordagem Tradicional
+        if fonte_memes == "Palavras-chave":
+            pks = row.get('palavras_chave', [])
+            if not isinstance(pks, list):
+                pks = [pks] if pd.notna(pks) else []
+            memes.update([remover_acentos(str(p).lower().strip()) for p in pks if str(p).strip()])
+            
+            titulo_norm = remover_acentos(str(row.get('titulo', '')).lower())
+            palavras_titulo = re.findall(r'\b[a-z]{3,}\b', titulo_norm)
+            memes.update([p for p in palavras_titulo if p not in stopwords_norm])
+            
+        # LÓGICA 2: Abordagem IA (Artefatos)
+        elif fonte_memes == "Artefatos Extraídos":
+            onto = row.get('ontologia_ia', {})
+            # Garante que é um dicionário antes de extrair
+            if isinstance(onto, dict):
+                teorias = onto.get('teorias_e_modelos', [])
+                ferramentas = onto.get('ferramentas_e_artefatos', [])
+                metodos = onto.get('metodos_e_tecnicas', [])
+                
+                # Previne erros caso a IA tenha retornado uma string em vez de lista
+                if not isinstance(teorias, list): teorias = [teorias]
+                if not isinstance(ferramentas, list): ferramentas = [ferramentas]
+                if not isinstance(metodos, list): metodos = [metodos]
+                
+                todos_artefatos = teorias + ferramentas + metodos
+                # Limpa e adiciona (mantemos o texto original sem quebrar palavras para preservar nomes compostos)
+                memes.update([str(a).strip().capitalize() for a in todos_artefatos if str(a).strip()])
+
         return list(memes)
 
     df_copy = df_base.copy()
@@ -165,8 +481,11 @@ def calcular_metricas_memeticas(df_base):
     
     df_explodido = df_copy.explode('memes_todos')
     df_explodido = df_explodido[df_explodido['memes_todos'].notna()]
-    df_explodido = df_explodido[df_explodido['memes_todos'].str.strip() != '']
+    df_explodido = df_explodido[df_explodido['memes_todos'].astype(str).str.strip() != '']
     df_explodido['meme'] = df_explodido['memes_todos']
+
+    if df_explodido.empty:
+        return pd.DataFrame(), pd.DataFrame(), 0, 0, pd.DataFrame(), pd.DataFrame()
 
     fecundidade = df_explodido.groupby('meme')['titulo'].nunique().reset_index(name='fecundidade')
     
@@ -186,7 +505,6 @@ def calcular_metricas_memeticas(df_base):
     longevidade_valida = longevidade[longevidade['total_aparicoes'] > 1].copy()
 
     return fecundidade, longevidade_valida, mortalidade_count, sobreviventes_count, df_mortos, df_vivos
-
 
 # =========================================================================
 # --- NOVO LÓGICA SANKEY TEMPORAL (PALAVRAS-CHAVE) ---
@@ -989,29 +1307,32 @@ def calcular_sna_global(dados):
     return resultado
 
 @st.cache_resource
-def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo"):
-    """Motor de renderização visual que extrai o subgrafo diretamente do Neo4j AuraDB usando Cypher."""
-    
-    # 1. Mapeamento de interface para as Labels do Neo4j
+def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, titulos_validos=None):
+    """
+    Motor de renderização visual que extrai o subgrafo do Neo4j com filtro temporal e de PPG.
+    """
     label_map = {
         "Documento": ("Documento", "titulo"),
         "Autor": ("Autor", "nome"),
         "Orientador": ("Orientador", "nome"),
-        "Co-orientador": ("Orientador", "nome"), # Na UFSC, tratamos ambos como a entidade Orientador
+        "Co-orientador": ("Orientador", "nome"),
         "Palavra-chave": ("Conceito", "nome")
     }
     
-    # 2. Construtor Dinâmico da Query Cypher
+    # ✅ Filtro para garantir que o documento pertença ao PPG selecionado
+    filtro_titulos = "AND d.titulo IN $titulos_validos" if titulos_validos else ""
+    
     if tipo_busca == "Macrotema":
-        # Se for macrotema, busca documentos por propriedade
         query = f"""
         MATCH path = (n:Documento {{macrotema: $termo}})-[*1..{profundidade}]-(m)
+        WHERE all(d IN nodes(path) WHERE NOT d:Documento OR (toInteger(d.ano) <= $ano_limite {filtro_titulos}))
         RETURN path LIMIT 300
         """
     else:
         label, prop = label_map.get(tipo_busca, ("Documento", "titulo"))
         query = f"""
         MATCH path = (n:{label} {{{prop}: $termo}})-[*1..{profundidade}]-(m)
+        WHERE all(d IN nodes(path) WHERE NOT d:Documento OR (toInteger(d.ano) <= $ano_limite {filtro_titulos}))
         RETURN path LIMIT 300
         """
         
@@ -1020,57 +1341,43 @@ def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_glo
     nos_processados = set()
     arestas_processadas = set()
     
-    # Estilo de alto contraste
-    config_fonte = {"color": "black", "strokeWidth": 3, "strokeColor": "white", "face": "sans-serif"}
+    config_fonte = {"color": "white", "strokeWidth": 4, "strokeColor": "#1E1E1E", "face": "sans-serif", "size": 14}
     
     try:
         with _driver.session() as session:
-            resultados = session.run(query, termo=termo_foco)
-            
+            resultados = session.run(query, termo=termo_foco, ano_limite=int(ano_limite), titulos_validos=titulos_validos)
             for record in resultados:
                 path = record["path"]
-                
-                # 3. Processa os Nós retornados do Banco
                 for node in path.nodes:
                     node_id = node.get("titulo") or node.get("nome")
                     if not node_id or node_id in nos_processados: continue
                     
-                    # Identifica a Label Neo4j para colorir
                     labels = list(node.labels)
                     tipo = labels[0] if labels else "Desconhecido"
                     
-                    # Calcula o tamanho usando os dados locais do Pandas (Híbrido)
                     tam = 20
-                    if node_id == termo_foco:
-                        tam = 45
+                    if node_id == termo_foco: tam = 45
                     elif _sna_global and metodo_tamanho != "Tamanho Fixo":
                         valor_metrica = _sna_global.get(node_id, {}).get(metodo_tamanho, 0.1)
-                        tam = 15 + (valor_metrica * 30) # Escala baseada na métrica escolhida
+                        tam = 15 + (valor_metrica * 30)
                     
-                    # Cores e Formatos ontológicos
                     cor = '#FFFFFF' if node_id == termo_foco else ('#E74C3C' if tipo == 'Documento' else '#3498DB' if tipo == 'Autor' else '#F39C12' if tipo == 'Orientador' else '#2ECC71' if tipo == 'Conceito' else '#9B59B6')
                     formato = 'diamond' if node_id == termo_foco else ('star' if tipo == 'Orientador' else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot')
                     
                     rotulo = str(node_id)[:30] + "..." if len(str(node_id)) > 30 and tipo == 'Documento' else str(node_id)
-                    
                     nodes_agraph.append(Node(id=node_id, label=rotulo, size=tam, color=cor, title=f"{node_id}\nTipo: {tipo}", shape=formato, font=config_fonte))
                     nos_processados.add(node_id)
                     
-                # 4. Processa as Arestas (Relacionamentos)
                 for rel in path.relationships:
                     n1 = rel.start_node.get("titulo") or rel.start_node.get("nome")
                     n2 = rel.end_node.get("titulo") or rel.end_node.get("nome")
-                    
-                    if n1 and n2:
+                    if n1 in nos_processados and n2 in nos_processados:
                         edge_id = f"{n1}-{n2}"
-                        edge_id_rev = f"{n2}-{n1}" # Evita arestas duplicadas bidirecionais
-                        if edge_id not in arestas_processadas and edge_id_rev not in arestas_processadas:
+                        if edge_id not in arestas_processadas:
                             edges_agraph.append(Edge(source=n1, target=n2, color="#95A5A6", width=1.0))
                             arestas_processadas.add(edge_id)
-                            
     except Exception as e:
-        print(f"Erro na extração do subgrafo: {e}")
-        
+        st.error(f"Erro na extração: {e}")
     return nodes_agraph, edges_agraph
 
 # --- FUNÇÃO AUXILIAR PARA DOSSIÊ ---

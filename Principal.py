@@ -15,6 +15,7 @@ import requests
 import urllib.parse
 from neo4j import GraphDatabase
 from streamlit_agraph import Node, Edge
+import time
 
 from backend import (
     conectar_neo4j, 
@@ -876,25 +877,75 @@ if termo_ativo:
 
 
     with tab_orbita:
-        st.markdown("**Mapeamento Topológico**")
+        st.markdown("### ⏳ Evolução Histórica da Órbita")
+        st.caption("Visualize como os relacionamentos científicos se expandiram ao longo do tempo.")
+
+        driver = conectar_neo4j() 
         
-        col_orb1, col_orb2 = st.columns(2)
-        grau_expansao = col_orb1.slider("Expansão do Grafo (Camadas de Profundidade):", 1, 3, 1)
-        metodo_tamanho_ego = col_orb2.selectbox("Tamanho dos Nós na Órbita:", ["Tamanho Fixo", "Grau Absoluto", "Degree Centrality", "Betweenness"])
-        
-        with st.spinner("Conectando ao banco de grafos Neo4j AuraDB..."):
-            driver_neo4j = conectar_neo4j()
-            # Chama a função nova Híbrida que criamos para o Neo4j
-            nodes, edges = gerar_orbita_neo4j(driver_neo4j, termo_ativo, tipo_busca, grau_expansao, sna_global, metodo_tamanho_ego)
+        if not driver:
+            st.error("Erro: Não foi possível conectar ao banco de dados Neo4j.")
+        else:
+            # ✅ CORREÇÃO: Calcula o intervalo de anos APENAS dos documentos do PPG carregado
+            anos_f = [int(d['ano']) for d in dados_completos if d.get('ano') and str(d['ano']).isdigit()]
             
-            if nodes and edges:
-                config = Config(width="100%", height=600, directed=False, physics=True, hierarchical=False, nodeHighlightBehavior=True, highlightColor="#F1C40F", collapsible=False)
-                retorno_clique = agraph(nodes=nodes, edges=edges, config=config)
-                
-                if retorno_clique and retorno_clique != termo_ativo:
-                    st.info(f"💡 Clicou no nó: **{retorno_clique}**. Pesquise por ele para ver os detalhes completos!")
+            if not anos_f:
+                st.warning("Aviso: Intervalo temporal não localizado para a seleção atual.")
+                min_ano, max_ano = 2000, 2026
             else:
-                st.warning("Não foi possível gerar a órbita visual para este termo. Verifique a conexão com o banco de grafos.")
+                min_ano, max_ano = min(anos_f), max(anos_f)
+            
+            anos_lista = list(range(min_ano, max_ano + 1))
+
+            if anos_lista:
+                col_play, col_slider = st.columns([1, 5])
+                
+                with col_play:
+                    st.write("##") 
+                    btn_play = st.button("▶️ Play", use_container_width=True, key="btn_play_orbita")
+                
+                with col_slider:
+                    if 'ano_animacao' not in st.session_state:
+                        st.session_state.ano_animacao = max_ano
+                    
+                    ano_selecionado = st.slider(
+                        "Navegação Temporal:",
+                        min_value=min_ano,
+                        max_value=max_ano,
+                        value=st.session_state.ano_animacao,
+                        key="slider_temporal_orbita"
+                    )
+                    st.session_state.ano_animacao = ano_selecionado
+
+                if btn_play:
+                    for ano in range(min_ano, max_ano + 1):
+                        st.session_state.ano_animacao = ano
+                        time.sleep(0.6) 
+                        st.rerun()
+
+                with st.spinner(f"Mapeando conexões até {st.session_state.ano_animacao}..."):
+                    # ✅ CORREÇÃO: Extrai a lista VIP de títulos do PPG selecionado
+                    lista_titulos_ppg = [d.get('titulo') for d in dados_completos if d.get('titulo')]
+
+                    nodes_orb, edges_orb = gerar_orbita_neo4j(
+                        driver, 
+                        termo_ativo, 
+                        tipo_busca, 
+                        profundidade=1,
+                        _sna_global=sna_global,
+                        ano_limite=st.session_state.ano_animacao,
+                        titulos_validos=lista_titulos_ppg # <--- FILTRO APLICADO AQUI
+                    )
+
+                    if nodes_orb:
+                        config_orb = Config(
+                            width="100%", height=600, directed=False, physics=True,
+                            nodeHighlightBehavior=True, highlightColor="#F39C12",
+                            interaction={"navigationButtons": True, "keyboard": True, "hover": True}
+                        )
+                        agraph(nodes=nodes_orb, edges=edges_orb, config=config_orb)
+                        st.info(f"Exibindo {len(nodes_orb)} entidades conectadas até {st.session_state.ano_animacao}.")
+                    else:
+                        st.warning(f"Não foram encontradas conexões para '{termo_ativo}' até o ano {st.session_state.ano_animacao}.")
 
     with tab_similares:
         st.markdown(f"**Recomendação Topológica (Itens mais próximos de {termo_ativo})**")

@@ -1345,7 +1345,9 @@ def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_glo
     
     try:
         with _driver.session() as session:
-            resultados = session.run(query, termo=termo_foco, ano_limite=int(ano_limite), titulos_validos=titulos_validos)
+            lista_para_banco = list(titulos_validos) if titulos_validos else None
+
+            resultados = session.run(query, termo=termo_foco, ano_limite=int(ano_limite), titulos_validos=lista_para_banco)
             for record in resultados:
                 path = record["path"]
                 for node in path.nodes:

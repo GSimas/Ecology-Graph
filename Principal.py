@@ -933,7 +933,7 @@ if termo_ativo:
                         profundidade=1,
                         _sna_global=sna_global,
                         ano_limite=st.session_state.ano_animacao,
-                        titulos_validos=lista_titulos_ppg # <--- FILTRO APLICADO AQUI
+                        titulos_validos=lista_titulos_ppg
                     )
 
                     if nodes_orb:

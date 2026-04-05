@@ -113,6 +113,10 @@ def obter_ecossistema_capes(nome_prog, catalogo_capes):
     """Encontra a Grande Área do PPG na base da CAPES usando Inteligência de Strings."""
     if not catalogo_capes: return "Multidisciplinar / Transversal"
     
+    # Validação para não processar strings de formato incorreto
+    if not isinstance(nome_prog, str):
+        return "Multidisciplinar / Transversal"
+        
     nome_limpo = nome_prog.replace("Programa de Pós-Graduação em ", "").replace("Programa de Pós-Graduação ", "").replace("PPG em ", "").strip().upper()
     nome_norm_busca = ''.join(c for c in unicodedata.normalize('NFD', nome_limpo) if unicodedata.category(c) != 'Mn')
     
@@ -137,6 +141,15 @@ def obter_ecossistema_capes(nome_prog, catalogo_capes):
     return "Multidisciplinar / Transversal"
 
 # --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
+def carregar_catalogo_tcc():
+    """Lê o arquivo local de mapeamento das coleções de TCC da UFSC."""
+    try:
+        with open('mapa_colecoes_tcc.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("❌ ERRO: Arquivo 'mapa_colecoes_tcc.json' não encontrado.")
+        return []
+
 def extrair_melhor_ano(lista_datas):
     if not lista_datas: return None
     anos = [int(m) for d in lista_datas for m in re.findall(r'\b(19\d{2}|20\d{2})\b', str(d))]
@@ -362,8 +375,8 @@ def executar_pipeline_diario():
         print("❌ ERRO: Arquivo 'programas_ufsc.json' não encontrado.")
         return
 
-    # 1. Extração e Agrupamento por Afinidade (VIA CAPES)
-    print("\n--- INICIANDO COLETA OAI-PMH E TAXONOMIA CAPES ---")
+    # 1. Extração e Agrupamento por Afinidade (VIA CAPES PARA PPG)
+    print("\n--- INICIANDO COLETA OAI-PMH (PPGs) ---")
     
     # NOVO: Baixa o catálogo oficial antes de começar a extrair os teses
     catalogo_capes_oficial = carregar_catalogo_capes_ufsc()
@@ -404,9 +417,9 @@ def executar_pipeline_diario():
         # Respiro entre as áreas para esfriar a API
         time.sleep(5)
 
-    # 3. Salvamento dos Dados
+    # 3. Salvamento dos Dados de PPGs
     nome_arquivo_saida = 'base_consolidada_ufsc.json.gz'
-    print(f"\n--- COMPACTANDO E SALVANDO DADOS ({nome_arquivo_saida}) ---")
+    print(f"\n--- COMPACTANDO E SALVANDO DADOS PPG ({nome_arquivo_saida}) ---")
     try:
         with gzip.open(nome_arquivo_saida, 'wt', encoding='utf-8') as f:
             json.dump(dados_finais_consolidados, f, ensure_ascii=False)
@@ -414,8 +427,57 @@ def executar_pipeline_diario():
     except Exception as e:
         print(f"❌ ERRO ao salvar o arquivo: {e}")
 
-    # 4. Envio para o Banco de Grafos
-    # Exemplo de como chamar no final do pipeline_ufsc.py
+    # =========================================================================
+    # FLUXO DA GRADUAÇÃO (TCCs) - EXTRAÇÃO
+    # =========================================================================
+    catalogo_tcc = carregar_catalogo_tcc()
+    if catalogo_tcc:
+        print("\n--- INICIANDO COLETA OAI-PMH (TCCs / Graduação) ---")
+        documentos_tcc_por_ecossistema = defaultdict(list)
+        
+        for tcc in catalogo_tcc:
+            curso = tcc.get('curso')
+            set_spec = tcc.get('setSpec')
+            if not curso or not set_spec: continue
+                
+            print(f"-> Minerando Graduação: {curso}")
+            dados_tcc = realizar_extracao(set_spec, nome_prog=curso)
+            
+            if dados_tcc:
+                # O ecossistema base será Graduação, pois não tem CAPES
+                # Pode complementar com uma área se souber, mas por padrão deixaremos como Graduação
+                ecossistema = "Graduação"
+                
+                for doc in dados_tcc:
+                    doc['ecossistema_afinidade'] = ecossistema
+                
+                documentos_tcc_por_ecossistema[ecossistema].extend(dados_tcc)
+                print(f"   [+] {len(dados_tcc)} TCCs extraídos de {curso}.")
+                
+        if documentos_tcc_por_ecossistema:
+            print("\n--- INICIANDO COMPUTAÇÃO SEMÂNTICA (TCCs) ---")
+            dados_tcc_consolidados = []
+            
+            for ecos, docs in documentos_tcc_por_ecossistema.items():
+                print(f"\n🧠 Analisando TCCs: {ecos} ({len(docs)} documentos)")
+                docs_tematizados_tcc = aplicar_macrotemas(docs, api_key=api_key)
+                dados_tcc_consolidados.extend(docs_tematizados_tcc)
+                time.sleep(5)
+                
+            # Salvamento dos Dados de TCCs
+            nome_arquivo_saida_tcc = 'base_tcc_ufsc.json.gz'
+            print(f"\n--- COMPACTANDO E SALVANDO DADOS TCC ({nome_arquivo_saida_tcc}) ---")
+            try:
+                with gzip.open(nome_arquivo_saida_tcc, 'wt', encoding='utf-8') as f:
+                    json.dump(dados_tcc_consolidados, f, ensure_ascii=False)
+                print("✅ Arquivo GZIP de TCCs gerado com sucesso!")
+            except Exception as e:
+                print(f"❌ ERRO ao salvar o arquivo de TCCs: {e}")
+    else:
+        print("\n⚠️ Nenhum catálogo de TCCs encontrado ou válido. Pulando extração de graduação.")
+    # =========================================================================
+
+    # 4. Envio para o Banco de Grafos (apenas PPGs)
     neo4j_uri, neo4j_user, neo4j_password = get_neo4j_credentials()
     if neo4j_uri and neo4j_user and neo4j_password:
         popular_banco_grafos(

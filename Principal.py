@@ -15,6 +15,7 @@ from app_config import get_gemini_api_key
 from backend import (
     conectar_neo4j, 
     extrair_subgrafo_neo4j,
+    gerar_orbita_local,
     navegar_para,
     gerar_tabela_entidades_por_macrotema,
     calcular_sna_global,
@@ -24,7 +25,9 @@ from backend import (
     gerar_descritivo_sessao,
     carregar_catalogo_capes_ufsc,
     carregar_base_consolidada,
+    carregar_base_tcc,
     carregar_catalogo_programas,
+    carregar_catalogo_tcc_frontend,
     plotar_mapa_tematico,
     calcular_similares_rede,
     plotar_grafico_3d_sna
@@ -52,37 +55,63 @@ if 'macrotemas_computados' not in st.session_state:
 
 # --- TELA DE SELEÇÃO INICIAL (CARREGAMENTO PREGUIÇOSO / LAZY LOADING) ---
 if 'dados_completos' not in st.session_state or st.session_state.get('recarregar'):
-    st.title("🔌 Seleção de Programas (PPGs)")
-    st.markdown("Selecione os programas que deseja analisar para carregar a base consolidada de publicações.")
+    st.title("🔌 Seleção de Coleções (PPGs e TCCs)")
+    st.markdown("Selecione as coleções que deseja analisar.")
     
     catalogo_leve = carregar_catalogo_programas()
     programas_disponiveis = sorted(list(catalogo_leve.keys()))
     
-    programas_selecionados = st.multiselect("Selecione um ou mais Programas de Pós-Graduação:", programas_disponiveis)
+    catalogo_tcc = carregar_catalogo_tcc_frontend()
+    tccs_disponiveis = sorted([t.get('curso') for t in catalogo_tcc if t.get('curso')])
+    
+    c1_sel, c2_sel = st.columns(2)
+    with c1_sel:
+        programas_selecionados = st.multiselect("Pós-Graduação (PPG):", programas_disponiveis)
+    with c2_sel:
+        tccs_selecionados = st.multiselect("Graduação (TCC):", tccs_disponiveis)
     
     if st.button("Carregar Dados e Iniciar Análise", type="primary"):
-        if programas_selecionados:
-            with st.spinner("Lendo a base consolidada e filtrando os PPGs selecionados. Isso levará apenas alguns segundos..."):
-                try:
-                    base_total = carregar_base_consolidada()
-                    dados_filtrados = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
-                    
-                    if not dados_filtrados:
-                        st.warning("Nenhum documento encontrado para os PPGs selecionados.")
+        if programas_selecionados or tccs_selecionados:
+            with st.spinner("Lendo as bases de dados e filtrando a seleção. Isso levará alguns segundos..."):
+                dados_combinados = []
+                
+                if programas_selecionados:
+                    try:
+                        base_total = carregar_base_consolidada()
+                        dados_filtrados_ppg = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
+                        dados_combinados.extend(dados_filtrados_ppg)
+                    except FileNotFoundError:
+                        st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado.")
                         st.stop()
                         
-                    st.session_state['dados_completos'] = dados_filtrados
-                    st.session_state['programas_selecionados_lista'] = programas_selecionados
-                    st.session_state['nome_programa'] = f"{len(programas_selecionados)} PPG(s) Selecionado(s): {', '.join(programas_selecionados)}"
-                    st.session_state['macrotemas_computados'] = True
-                    st.session_state['recarregar'] = False
-                    st.rerun()
-                    
-                except FileNotFoundError:
-                    st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado.")
+                if tccs_selecionados:
+                    try:
+                        base_tcc = carregar_base_tcc()
+                        dados_filtrados_tcc = [d for d in base_tcc if d.get('programa_origem', '') in tccs_selecionados]
+                        dados_combinados.extend(dados_filtrados_tcc)
+                    except FileNotFoundError:
+                        st.error("O arquivo 'base_tcc_ufsc.json.gz' não foi encontrado.")
+                        st.stop()
+                
+                if not dados_combinados:
+                    st.warning("Nenhum documento encontrado para a seleção atual.")
                     st.stop()
+                    
+                st.session_state['dados_completos'] = dados_combinados
+                st.session_state['programas_selecionados_lista'] = programas_selecionados
+                st.session_state['tccs_selecionados_lista'] = tccs_selecionados
+                
+                nomes_combinados = programas_selecionados + tccs_selecionados
+                st.session_state['nome_programa'] = f"{len(nomes_combinados)} Origem(ns) Selecionada(s): {', '.join(nomes_combinados)}"
+                st.session_state['macrotemas_computados'] = True
+                st.session_state['recarregar'] = False
+                st.rerun()
         else:
-            st.warning("Por favor, selecione pelo menos um programa para continuar.")
+            st.warning("Por favor, selecione pelo menos um PPG ou TCC para continuar.")
+
+    if not programas_selecionados and tccs_selecionados:
+        st.info("ℹ️ Painel CAPES ocultado considerando a seleção exclusiva de Cursos de Graduação.")
+        st.stop()
 
     # =====================================================================
     # PANORAMA GLOBAL DA UFSC (CAPES)
@@ -371,7 +400,7 @@ for nome_ppg in nomes_ppgs:
             st.write(f"**Ensino:** {dados_capes['Modalidade de Ensino']}")
     else:
         st.markdown(f"**{nome_ppg}**")
-        st.caption("⚠️ Dados oficiais não localizados na base da CAPES (Possível variação de nomenclatura institucional).")
+        st.caption("⚠️ Dados oficiais não localizados na base da CAPES (Possível variação de nomenclatura ou Curso de Graduação sem registro).")
         
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -866,12 +895,18 @@ if termo_ativo:
         st.markdown("### ⏳ Evolução Histórica da Órbita")
         st.caption("Visualize como os relacionamentos científicos se expandiram ao longo do tempo.")
 
-        driver = conectar_neo4j() 
+        tem_tcc = bool(st.session_state.get('tccs_selecionados_lista', []))
         
-        if not driver:
-            st.error("Erro: Não foi possível conectar ao banco de dados Neo4j.")
+        driver = None
+        if not tem_tcc:
+            driver = conectar_neo4j() 
+            if not driver:
+                st.error("Erro: Não foi possível conectar ao banco de dados Neo4j.")
         else:
-            # ✅ CORREÇÃO: Calcula o intervalo de anos APENAS dos documentos do PPG carregado
+            st.info("ℹ️ TCCs presentes na seleção. Utilizando motor in-memory local para evitar vazamentos/incompatibilidades no Neo4j.")
+
+        if driver or tem_tcc:
+            # ✅ CORREÇÃO: Calcula o intervalo de anos APENAS dos documentos carregados
             anos_f = [int(d['ano']) for d in dados_completos if d.get('ano') and str(d['ano']).isdigit()]
             
             if not anos_f:
@@ -909,18 +944,26 @@ if termo_ativo:
                         st.rerun()
 
                 with st.spinner(f"Mapeando conexões até {st.session_state.ano_animacao}..."):
-                    # ✅ CORREÇÃO: Extrai a lista VIP de títulos do PPG selecionado
-                    lista_titulos_ppg = [d.get('titulo') for d in dados_completos if d.get('titulo')]
-
-                    nodes_orb, edges_orb = gerar_orbita_neo4j(
-                        driver, 
-                        termo_ativo, 
-                        tipo_busca, 
-                        profundidade=1,
-                        _sna_global=sna_global,
-                        ano_limite=st.session_state.ano_animacao,
-                        titulos_validos=lista_titulos_ppg
-                    )
+                    if tem_tcc:
+                        nodes_orb, edges_orb = gerar_orbita_local(
+                            termo_ativo, 
+                            tipo_busca, 
+                            profundidade=1,
+                            _sna_global=sna_global,
+                            ano_limite=st.session_state.ano_animacao,
+                            dados_completos=dados_completos
+                        )
+                    else:
+                        lista_titulos_ppg = [d.get('titulo') for d in dados_completos if d.get('titulo')]
+                        nodes_orb, edges_orb = gerar_orbita_neo4j(
+                            driver, 
+                            termo_ativo, 
+                            tipo_busca, 
+                            profundidade=1,
+                            _sna_global=sna_global,
+                            ano_limite=st.session_state.ano_animacao,
+                            titulos_validos=lista_titulos_ppg
+                        )
 
                     if nodes_orb:
                         config_orb = Config(

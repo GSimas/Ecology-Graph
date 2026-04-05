@@ -1,0 +1,677 @@
+[
+    {
+        "curso": "TCC Administração",
+        "setSpec": "col_123456789_7480",
+        "handle": "123456789/7480"
+    },
+    {
+        "curso": "TCC Administração EAD",
+        "setSpec": "col_123456789_201407",
+        "handle": "123456789/201407"
+    },
+    {
+        "curso": "TCC Administração Pública EAD",
+        "setSpec": "col_123456789_201408",
+        "handle": "123456789/201408"
+    },
+    {
+        "curso": "TCC Agronomia",
+        "setSpec": "col_123456789_7428",
+        "handle": "123456789/7428"
+    },
+    {
+        "curso": "TCC Agronomia (Curitibanos)",
+        "setSpec": "col_123456789_100429",
+        "handle": "123456789/100429"
+    },
+    {
+        "curso": "TCC Animação",
+        "setSpec": "col_123456789_178121",
+        "handle": "123456789/178121"
+    },
+    {
+        "curso": "TCC Antropologia",
+        "setSpec": "col_123456789_7487",
+        "handle": "123456789/7487"
+    },
+    {
+        "curso": "TCC Arquitetura e Urbanismo",
+        "setSpec": "col_123456789_7443",
+        "handle": "123456789/7443"
+    },
+    {
+        "curso": "TCC Arquivologia",
+        "setSpec": "col_123456789_7424",
+        "handle": "123456789/7424"
+    },
+    {
+        "curso": "TCC Artes Cênicas - Teatro",
+        "setSpec": "col_123456789_7513",
+        "handle": "123456789/7513"
+    },
+    {
+        "curso": "TCC Biblioteconomia",
+        "setSpec": "col_123456789_7366",
+        "handle": "123456789/7366"
+    },
+    {
+        "curso": "TCC Cinema",
+        "setSpec": "col_123456789_132740",
+        "handle": "123456789/132740"
+    },
+    {
+        "curso": "TCC Ciência da Informação",
+        "setSpec": "col_123456789_182844",
+        "handle": "123456789/182844"
+    },
+    {
+        "curso": "TCC Ciência e Tecnologia (Joinville)",
+        "setSpec": "col_123456789_115611",
+        "handle": "123456789/115611"
+    },
+    {
+        "curso": "TCC Ciência e Tecnologia de Alimentos",
+        "setSpec": "col_123456789_7429",
+        "handle": "123456789/7429"
+    },
+    {
+        "curso": "TCC Ciências Biológicas",
+        "setSpec": "col_123456789_7433",
+        "handle": "123456789/7433"
+    },
+    {
+        "curso": "TCC Ciências Biológicas EAD",
+        "setSpec": "col_123456789_201404",
+        "handle": "123456789/201404"
+    },
+    {
+        "curso": "TCC Ciências Contábeis",
+        "setSpec": "col_123456789_7484",
+        "handle": "123456789/7484"
+    },
+    {
+        "curso": "TCC Ciências Contábeis EAD",
+        "setSpec": "col_123456789_201409",
+        "handle": "123456789/201409"
+    },
+    {
+        "curso": "TCC Ciências Econômicas",
+        "setSpec": "col_123456789_7481",
+        "handle": "123456789/7481"
+    },
+    {
+        "curso": "TCC Ciências Econômicas EAD",
+        "setSpec": "col_123456789_136194",
+        "handle": "123456789/136194"
+    },
+    {
+        "curso": "TCC Ciências Rurais (Curitibanos)",
+        "setSpec": "col_123456789_100432",
+        "handle": "123456789/100432"
+    },
+    {
+        "curso": "TCC Ciências Sociais",
+        "setSpec": "col_123456789_7488",
+        "handle": "123456789/7488"
+    },
+    {
+        "curso": "TCC Ciências da Computação",
+        "setSpec": "col_123456789_7444",
+        "handle": "123456789/7444"
+    },
+    {
+        "curso": "TCC Design",
+        "setSpec": "col_123456789_7515",
+        "handle": "123456789/7515"
+    },
+    {
+        "curso": "TCC Design de Produto",
+        "setSpec": "col_123456789_201413",
+        "handle": "123456789/201413"
+    },
+    {
+        "curso": "TCC Direito",
+        "setSpec": "col_123456789_7507",
+        "handle": "123456789/7507"
+    },
+    {
+        "curso": "TCC Direito (digitalizados)",
+        "setSpec": "col_123456789_265457",
+        "handle": "123456789/265457"
+    },
+    {
+        "curso": "TCC Educação Física  - Licenciatura",
+        "setSpec": "col_123456789_170199",
+        "handle": "123456789/170199"
+    },
+    {
+        "curso": "TCC Educação Física - Bacharelado",
+        "setSpec": "col_123456789_7497",
+        "handle": "123456789/7497"
+    },
+    {
+        "curso": "TCC Educação do Campo",
+        "setSpec": "col_123456789_7425",
+        "handle": "123456789/7425"
+    },
+    {
+        "curso": "TCC Enfermagem",
+        "setSpec": "col_123456789_7436",
+        "handle": "123456789/7436"
+    },
+    {
+        "curso": "TCC Engenharia Aeroespacial  (Joinville)",
+        "setSpec": "col_123456789_115612",
+        "handle": "123456789/115612"
+    },
+    {
+        "curso": "TCC Engenharia Automotiva (Joinville)",
+        "setSpec": "col_123456789_115613",
+        "handle": "123456789/115613"
+    },
+    {
+        "curso": "TCC Engenharia Civil",
+        "setSpec": "col_123456789_7445",
+        "handle": "123456789/7445"
+    },
+    {
+        "curso": "TCC Engenharia Civil de Infraestrutura (Joinville)",
+        "setSpec": "col_123456789_115616",
+        "handle": "123456789/115616"
+    },
+    {
+        "curso": "TCC Engenharia Eletrônica",
+        "setSpec": "col_123456789_7451",
+        "handle": "123456789/7451"
+    },
+    {
+        "curso": "TCC Engenharia Elétrica",
+        "setSpec": "col_123456789_7450",
+        "handle": "123456789/7450"
+    },
+    {
+        "curso": "TCC Engenharia Ferroviária e Metroviária (Joinville)",
+        "setSpec": "col_123456789_115614",
+        "handle": "123456789/115614"
+    },
+    {
+        "curso": "TCC Engenharia Florestal (Curitibanos)",
+        "setSpec": "col_123456789_100436",
+        "handle": "123456789/100436"
+    },
+    {
+        "curso": "TCC Engenharia Mecatrônica (Joinville)",
+        "setSpec": "col_123456789_115617",
+        "handle": "123456789/115617"
+    },
+    {
+        "curso": "TCC Engenharia Mecânica",
+        "setSpec": "col_123456789_7452",
+        "handle": "123456789/7452"
+    },
+    {
+        "curso": "TCC Engenharia Naval (Joinville)",
+        "setSpec": "col_123456789_115618",
+        "handle": "123456789/115618"
+    },
+    {
+        "curso": "TCC Engenharia Química",
+        "setSpec": "col_123456789_7453",
+        "handle": "123456789/7453"
+    },
+    {
+        "curso": "TCC Engenharia Sanitária e Ambiental",
+        "setSpec": "col_123456789_124305",
+        "handle": "123456789/124305"
+    },
+    {
+        "curso": "TCC Engenharia Têxtil (Blumenau)",
+        "setSpec": "col_123456789_187972",
+        "handle": "123456789/187972"
+    },
+    {
+        "curso": "TCC Engenharia de Alimentos",
+        "setSpec": "col_123456789_7446",
+        "handle": "123456789/7446"
+    },
+    {
+        "curso": "TCC Engenharia de Aquicultura",
+        "setSpec": "col_123456789_7431",
+        "handle": "123456789/7431"
+    },
+    {
+        "curso": "TCC Engenharia de Computação (Araranguá)",
+        "setSpec": "col_123456789_159971",
+        "handle": "123456789/159971"
+    },
+    {
+        "curso": "TCC Engenharia de Controle e Automação",
+        "setSpec": "col_123456789_7447",
+        "handle": "123456789/7447"
+    },
+    {
+        "curso": "TCC Engenharia de Controle e Automação (Blumenau)",
+        "setSpec": "col_123456789_167526",
+        "handle": "123456789/167526"
+    },
+    {
+        "curso": "TCC Engenharia de Energia (Araranguá)",
+        "setSpec": "col_123456789_127436",
+        "handle": "123456789/127436"
+    },
+    {
+        "curso": "TCC Engenharia de Materiais",
+        "setSpec": "col_123456789_7448",
+        "handle": "123456789/7448"
+    },
+    {
+        "curso": "TCC Engenharia de Materiais (Blumenau)",
+        "setSpec": "col_123456789_167525",
+        "handle": "123456789/167525"
+    },
+    {
+        "curso": "TCC Engenharia de Produção",
+        "setSpec": "col_123456789_7449",
+        "handle": "123456789/7449"
+    },
+    {
+        "curso": "TCC Engenharia de Transportes e Logística (Joinville)",
+        "setSpec": "col_123456789_115619",
+        "handle": "123456789/115619"
+    },
+    {
+        "curso": "TCC Especialização -  Atenção Domiciliar",
+        "setSpec": "col_123456789_163295",
+        "handle": "123456789/163295"
+    },
+    {
+        "curso": "TCC Especialização -  Gênero e Diversidade na Escola (GDE)",
+        "setSpec": "col_123456789_171966",
+        "handle": "123456789/171966"
+    },
+    {
+        "curso": "TCC Especialização -  Operações Rodoviárias",
+        "setSpec": "col_123456789_168493",
+        "handle": "123456789/168493"
+    },
+    {
+        "curso": "TCC Especialização -  Residência em Cirurgia e Traumatologia Bucofacial (UFSC)",
+        "setSpec": "col_123456789_168491",
+        "handle": "123456789/168491"
+    },
+    {
+        "curso": "TCC Especialização -  Tecnologias da Informação e Comunicação aplicadas à Segurança Pública e Direitos Humanos (TICSENASP)",
+        "setSpec": "col_123456789_176618",
+        "handle": "123456789/176618"
+    },
+    {
+        "curso": "TCC Especialização - Agroecossistemas",
+        "setSpec": "col_123456789_188624",
+        "handle": "123456789/188624"
+    },
+    {
+        "curso": "TCC Especialização - Aquicultura",
+        "setSpec": "col_123456789_188618",
+        "handle": "123456789/188618"
+    },
+    {
+        "curso": "TCC Especialização - Assessoria Técnica em Habitação de Interesse Social (ATHIS)",
+        "setSpec": "col_123456789_272626",
+        "handle": "123456789/272626"
+    },
+    {
+        "curso": "TCC Especialização - Ciências e Tecnologia (Joinville)",
+        "setSpec": "col_123456789_160611",
+        "handle": "123456789/160611"
+    },
+    {
+        "curso": "TCC Especialização - Curso de Especialização em Conservação e Restauração de Documentos em Suporte de Papel",
+        "setSpec": "col_123456789_246105",
+        "handle": "123456789/246105"
+    },
+    {
+        "curso": "TCC Especialização - Curso de Especialização em Docência na Educação Infantil (CEDEI)",
+        "setSpec": "col_123456789_126669",
+        "handle": "123456789/126669"
+    },
+    {
+        "curso": "TCC Especialização - Curso de Especialização em Permacultura",
+        "setSpec": "col_123456789_234017",
+        "handle": "123456789/234017"
+    },
+    {
+        "curso": "TCC Especialização - Educação na Cultura Digital",
+        "setSpec": "col_123456789_166330",
+        "handle": "123456789/166330"
+    },
+    {
+        "curso": "TCC Especialização - Física",
+        "setSpec": "col_123456789_104985",
+        "handle": "123456789/104985"
+    },
+    {
+        "curso": "TCC Especialização - Gestão Hospitalar",
+        "setSpec": "col_123456789_104476",
+        "handle": "123456789/104476"
+    },
+    {
+        "curso": "TCC Especialização - Inteligência e Inovação Aplicadas ao Enfrentamento do Crime Organizado",
+        "setSpec": "col_123456789_272586",
+        "handle": "123456789/272586"
+    },
+    {
+        "curso": "TCC Especialização - Interações Edafohidrológicas em Microbacias Hidrográficas",
+        "setSpec": "col_123456789_188617",
+        "handle": "123456789/188617"
+    },
+    {
+        "curso": "TCC Especialização - Linguagem e  Educação a Distância",
+        "setSpec": "col_123456789_195787",
+        "handle": "123456789/195787"
+    },
+    {
+        "curso": "TCC Especialização - Linhas de Cuidado em Atenção Psicossocial",
+        "setSpec": "col_123456789_163293",
+        "handle": "123456789/163293"
+    },
+    {
+        "curso": "TCC Especialização - Linhas de Cuidado em Doenças Crônicas Não Transmissíveis",
+        "setSpec": "col_123456789_163291",
+        "handle": "123456789/163291"
+    },
+    {
+        "curso": "TCC Especialização - Linhas de Cuidado em Saúde Materna, Neonatal e do Lactante",
+        "setSpec": "col_123456789_163294",
+        "handle": "123456789/163294"
+    },
+    {
+        "curso": "TCC Especialização - Linhas de Cuidado em Urgência e Emergência",
+        "setSpec": "col_123456789_166787",
+        "handle": "123456789/166787"
+    },
+    {
+        "curso": "TCC Especialização - Mais Médicos",
+        "setSpec": "col_123456789_163296",
+        "handle": "123456789/163296"
+    },
+    {
+        "curso": "TCC Especialização - Matemática",
+        "setSpec": "col_123456789_104986",
+        "handle": "123456789/104986"
+    },
+    {
+        "curso": "TCC Especialização - Medicina do Trabalho",
+        "setSpec": "col_123456789_104475",
+        "handle": "123456789/104475"
+    },
+    {
+        "curso": "TCC Especialização - Metodologia do Ensino de Língua e Literatura",
+        "setSpec": "col_123456789_158328",
+        "handle": "123456789/158328"
+    },
+    {
+        "curso": "TCC Especialização - Odontologia",
+        "setSpec": "col_123456789_190738",
+        "handle": "123456789/190738"
+    },
+    {
+        "curso": "TCC Especialização - Planejamento e Controle de Gestão da Saúde",
+        "setSpec": "col_123456789_253952",
+        "handle": "123456789/253952"
+    },
+    {
+        "curso": "TCC Especialização - Residência Integrada Multiprofissional em Saúde (UFSC)",
+        "setSpec": "col_123456789_168489",
+        "handle": "123456789/168489"
+    },
+    {
+        "curso": "TCC Especialização - Residência Multiprofissional em Saúde da Família (UFSC)",
+        "setSpec": "col_123456789_168490",
+        "handle": "123456789/168490"
+    },
+    {
+        "curso": "TCC Farmácia",
+        "setSpec": "col_123456789_7437",
+        "handle": "123456789/7437"
+    },
+    {
+        "curso": "TCC Filosofia",
+        "setSpec": "col_123456789_7486",
+        "handle": "123456789/7486"
+    },
+    {
+        "curso": "TCC Filosofia EAD",
+        "setSpec": "col_123456789_201411",
+        "handle": "123456789/201411"
+    },
+    {
+        "curso": "TCC Fisioterapia (Araranguá)",
+        "setSpec": "col_123456789_133706",
+        "handle": "123456789/133706"
+    },
+    {
+        "curso": "TCC Fonoaudiologia",
+        "setSpec": "col_123456789_7438",
+        "handle": "123456789/7438"
+    },
+    {
+        "curso": "TCC Física",
+        "setSpec": "col_123456789_7501",
+        "handle": "123456789/7501"
+    },
+    {
+        "curso": "TCC Física EAD",
+        "setSpec": "col_123456789_201405",
+        "handle": "123456789/201405"
+    },
+    {
+        "curso": "TCC Geografia",
+        "setSpec": "col_123456789_7489",
+        "handle": "123456789/7489"
+    },
+    {
+        "curso": "TCC Geologia",
+        "setSpec": "col_123456789_7490",
+        "handle": "123456789/7490"
+    },
+    {
+        "curso": "TCC História",
+        "setSpec": "col_123456789_7491",
+        "handle": "123456789/7491"
+    },
+    {
+        "curso": "TCC Intercultural Indígena do Sul da Mata Atlântica",
+        "setSpec": "col_123456789_7494",
+        "handle": "123456789/7494"
+    },
+    {
+        "curso": "TCC Jornalismo",
+        "setSpec": "col_123456789_7516",
+        "handle": "123456789/7516"
+    },
+    {
+        "curso": "TCC Letras LIBRAS",
+        "setSpec": "col_123456789_7517",
+        "handle": "123456789/7517"
+    },
+    {
+        "curso": "TCC Letras LIBRAS EAD",
+        "setSpec": "col_123456789_185676",
+        "handle": "123456789/185676"
+    },
+    {
+        "curso": "TCC Letras Língua Portuguesa e Literaturas em Língua Portuguesa",
+        "setSpec": "col_123456789_7518",
+        "handle": "123456789/7518"
+    },
+    {
+        "curso": "TCC Letras Línguas Estrangeiras - Alemão",
+        "setSpec": "col_123456789_7519",
+        "handle": "123456789/7519"
+    },
+    {
+        "curso": "TCC Letras Línguas Estrangeiras - Espanhol",
+        "setSpec": "col_123456789_97172",
+        "handle": "123456789/97172"
+    },
+    {
+        "curso": "TCC Letras Línguas Estrangeiras - Francês",
+        "setSpec": "col_123456789_97173",
+        "handle": "123456789/97173"
+    },
+    {
+        "curso": "TCC Letras Línguas Estrangeiras - Inglês",
+        "setSpec": "col_123456789_97177",
+        "handle": "123456789/97177"
+    },
+    {
+        "curso": "TCC Letras Línguas Estrangeiras - Italiano",
+        "setSpec": "col_123456789_97179",
+        "handle": "123456789/97179"
+    },
+    {
+        "curso": "TCC Matemática",
+        "setSpec": "col_123456789_7502",
+        "handle": "123456789/7502"
+    },
+    {
+        "curso": "TCC Matemática (Blumenau)",
+        "setSpec": "col_123456789_167524",
+        "handle": "123456789/167524"
+    },
+    {
+        "curso": "TCC Matemática EAD",
+        "setSpec": "col_123456789_201406",
+        "handle": "123456789/201406"
+    },
+    {
+        "curso": "TCC Medicina",
+        "setSpec": "col_123456789_7439",
+        "handle": "123456789/7439"
+    },
+    {
+        "curso": "TCC Medicina (Araranguá)",
+        "setSpec": "col_123456789_201412",
+        "handle": "123456789/201412"
+    },
+    {
+        "curso": "TCC Medicina Veterinária (Curitibanos)",
+        "setSpec": "col_123456789_100440",
+        "handle": "123456789/100440"
+    },
+    {
+        "curso": "TCC Meteorologia",
+        "setSpec": "col_123456789_7503",
+        "handle": "123456789/7503"
+    },
+    {
+        "curso": "TCC Museologia",
+        "setSpec": "col_123456789_7492",
+        "handle": "123456789/7492"
+    },
+    {
+        "curso": "TCC Nutrição",
+        "setSpec": "col_123456789_7441",
+        "handle": "123456789/7441"
+    },
+    {
+        "curso": "TCC Oceanografia",
+        "setSpec": "col_123456789_7493",
+        "handle": "123456789/7493"
+    },
+    {
+        "curso": "TCC Odontologia",
+        "setSpec": "col_123456789_7440",
+        "handle": "123456789/7440"
+    },
+    {
+        "curso": "TCC Pedagogia",
+        "setSpec": "col_123456789_7426",
+        "handle": "123456789/7426"
+    },
+    {
+        "curso": "TCC Psicologia",
+        "setSpec": "col_123456789_7495",
+        "handle": "123456789/7495"
+    },
+    {
+        "curso": "TCC Química",
+        "setSpec": "col_123456789_7504",
+        "handle": "123456789/7504"
+    },
+    {
+        "curso": "TCC Química - Bacharelado (Blumenau)",
+        "setSpec": "col_123456789_246049",
+        "handle": "123456789/246049"
+    },
+    {
+        "curso": "TCC Química - Licenciatura (Blumenau)",
+        "setSpec": "col_123456789_182845",
+        "handle": "123456789/182845"
+    },
+    {
+        "curso": "TCC Relações Internacionais",
+        "setSpec": "col_123456789_7482",
+        "handle": "123456789/7482"
+    },
+    {
+        "curso": "TCC Secretariado Executivo",
+        "setSpec": "col_123456789_188284",
+        "handle": "123456789/188284"
+    },
+    {
+        "curso": "TCC Serviço Social",
+        "setSpec": "col_123456789_7483",
+        "handle": "123456789/7483"
+    },
+    {
+        "curso": "TCC Sistemas de Informação",
+        "setSpec": "col_123456789_7455",
+        "handle": "123456789/7455"
+    },
+    {
+        "curso": "TCC Tecnologias da Informação e Comunicação (Araranguá)",
+        "setSpec": "col_123456789_41812",
+        "handle": "123456789/41812"
+    },
+    {
+        "curso": "TCC Zootecnia",
+        "setSpec": "col_123456789_7430",
+        "handle": "123456789/7430"
+    },
+    {
+        "curso": "TCC templates e documentos",
+        "setSpec": "col_123456789_224174",
+        "handle": "123456789/224174"
+    },
+    {
+        "curso": "TCC's em História da Educação Matemática",
+        "setSpec": "col_123456789_178808",
+        "handle": "123456789/178808"
+    },
+    {
+        "curso": "TCCs 2018",
+        "setSpec": "col_123456789_188035",
+        "handle": "123456789/188035"
+    },
+    {
+        "curso": "TCCs 2020",
+        "setSpec": "col_123456789_219132",
+        "handle": "123456789/219132"
+    },
+    {
+        "curso": "TCCs 2021",
+        "setSpec": "col_123456789_224592",
+        "handle": "123456789/224592"
+    },
+    {
+        "curso": "TCCs Editais",
+        "setSpec": "col_123456789_170451",
+        "handle": "123456789/170451"
+    },
+    {
+        "curso": "TCCs Turma 2008-Estudos Surdos",
+        "setSpec": "col_123456789_104465",
+        "handle": "123456789/104465"
+    }
+]

@@ -58,6 +58,9 @@ def fatiar_lista(lista, tamanho_lote):
         yield lista[i:i + tamanho_lote]
 
 def carregar_e_injetar():
+    # AVISO CRÍTICO: TCCs (Graduação) NÃO DEVEM ser injetados no Neo4j.
+    # Esta rotina carrega e injeta estritamente a base de Pós-Graduação (PPGs).
+    # A base de TCCs ('base_tcc_ufsc.json.gz') é manipulada localmente no Streamlit.
     arquivo_gz = 'base_consolidada_ufsc.json.gz'
     
     print(f"\n📂 Abrindo arquivo local: {arquivo_gz}...")

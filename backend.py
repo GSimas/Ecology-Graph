@@ -1309,6 +1309,86 @@ def calcular_sna_global(dados):
     return resultado
 
 @st.cache_resource
+def gerar_orbita_local(termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, dados_completos=None):
+    """
+    Motor in-memory de renderização visual (Fallback sem Neo4j para TCCs).
+    """
+    if not dados_completos: return [], []
+    
+    # 1. Constrói a Rede Temporária Baseada no Limite de Ano
+    G = nx.Graph()
+    for d in dados_completos:
+        # Pula se o doc exceder o ano_limite
+        ano = int(d['ano']) if d.get('ano') and str(d['ano']).isdigit() else 2000
+        if ano > ano_limite:
+            continue
+            
+        doc = d.get('titulo')
+        if not doc: continue
+        
+        G.add_node(doc, tipo='Documento')
+        
+        for a in d.get('autores', []): 
+            G.add_node(a, tipo='Autor')
+            G.add_edge(doc, a)
+            
+        ori = d.get('orientador')
+        if ori: 
+            G.add_node(ori, tipo='Orientador')
+            G.add_edge(doc, ori)
+            
+        # Adicionar co-orientadores para fidelidade
+        for co in d.get('co_orientadores', []):
+            G.add_node(co, tipo='Co-orientador')
+            G.add_edge(doc, co)
+            
+        for pk in d.get('palavras_chave', []): 
+            G.add_node(pk, tipo='Conceito')
+            G.add_edge(doc, pk)
+            
+        mt = d.get('macrotema')
+        if mt:
+            G.add_node(mt, tipo='Macrotema')
+            G.add_edge(doc, mt)
+            
+    if termo_foco not in G: 
+        return [], []
+        
+    # 2. Extrai o Ego-Graph de acordo com a profundidade
+    ego_net = nx.ego_graph(G, termo_foco, radius=profundidade)
+    
+    # 3. Mapeamento Estético (Idêntico ao Neo4j)
+    nodes_agraph = []
+    edges_agraph = []
+    config_fonte = {"color": "white", "strokeWidth": 4, "strokeColor": "#1E1E1E", "face": "sans-serif", "size": 14}
+    
+    for node, attrs in ego_net.nodes(data=True):
+        tipo = attrs.get('tipo', 'Desconhecido')
+        
+        tam = 20
+        if node == termo_foco: tam = 45
+        elif _sna_global and metodo_tamanho != "Tamanho Fixo":
+            valor_metrica = _sna_global.get(node, {}).get(metodo_tamanho, 0.1)
+            tam = 15 + (valor_metrica * 30)
+            
+        cor_base = '#9B59B6'
+        if tipo == 'Documento': cor_base = '#E74C3C'
+        elif tipo == 'Autor': cor_base = '#3498DB'
+        elif tipo in ['Orientador', 'Co-orientador']: cor_base = '#F39C12'
+        elif tipo == 'Conceito': cor_base = '#2ECC71'
+            
+        cor = '#FFFFFF' if node == termo_foco else cor_base
+        formato = 'diamond' if node == termo_foco else ('star' if tipo in ['Orientador', 'Co-orientador'] else 'square' if tipo == 'Documento' else 'triangle' if tipo == 'Conceito' else 'dot')
+        
+        rotulo = str(node)[:30] + "..." if len(str(node)) > 30 and tipo == 'Documento' else str(node)
+        nodes_agraph.append(Node(id=node, label=rotulo, size=tam, color=cor, title=f"{node}\\nTipo: {tipo}", shape=formato, font=config_fonte))
+        
+    for u, v in ego_net.edges():
+        edges_agraph.append(Edge(source=u, target=v, color="#95A5A6", width=1.0))
+        
+    return nodes_agraph, edges_agraph
+
+@st.cache_resource
 def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, titulos_validos=None):
     """
     Motor de renderização visual que extrai o subgrafo do Neo4j com filtro temporal e de PPG.
@@ -1568,6 +1648,14 @@ def carregar_base_consolidada():
     except FileNotFoundError:
         return []
 
+@st.cache_data
+def carregar_base_tcc():
+    try:
+        with gzip.open('base_tcc_ufsc.json.gz', 'rt', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
 
 # --- FUNÇÃO GERADORA DO MAPA TEMÁTICO (BIBLIOMETRIX STYLE) ---
 def plotar_mapa_tematico(df_plot, x_col, y_col, size_col, label_col, title):
@@ -1629,3 +1717,11 @@ def carregar_catalogo_programas():
     except FileNotFoundError:
         st.error("⚠️ Ficheiro 'programas_ufsc.json' não encontrado na raiz.")
         return {}
+
+@st.cache_data
+def carregar_catalogo_tcc_frontend():
+    try:
+        with open('mapa_colecoes_tcc.json', 'r', encoding='utf-8') as f: 
+            return json.load(f)
+    except FileNotFoundError:
+        return []

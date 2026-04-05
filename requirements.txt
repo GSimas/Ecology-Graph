@@ -1,4 +1,4 @@
-google-generativeai
+google-genai>=1.0.0
 groq
 matplotlib
 neo4j
@@ -13,7 +13,5 @@ scipy
 sickle
 streamlit>=1.40.0
 streamlit-agraph
-toml
 wordcloud
-protobuf==3.20.3
 setuptools

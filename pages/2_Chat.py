@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 import networkx as nx
-import google.generativeai as genai
 import time
+
+from app_config import get_gemini_api_key
+from gemini_utils import content_from_text, generate_content
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -48,11 +50,9 @@ base_dados = st.session_state['dados_completos']
 nome_programa = st.session_state.get('nome_programa', 'Programa Selecionado')
 
 # --- CONFIGURAÇÃO AUTOMÁTICA DA API KEY ---
-try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=api_key)
-except Exception:
-    st.error("⚠️ Erro: GEMINI_API_KEY não encontrada nos Secrets do Streamlit.")
+api_key = get_gemini_api_key()
+if not api_key:
+    st.error("⚠️ Erro: GEMINI_API_KEY não encontrada em variáveis de ambiente ou secrets.")
     st.stop()
 
 # --- MOTOR DE CONTEXTO ABSOLUTO (SNA + CATÁLOGO) ---
@@ -180,21 +180,6 @@ DOSSIÊ DE CONHECIMENTO (BASE DE DADOS):
 {contexto_absoluto}
 """
 
-# Configuração do Modelo Gemini
-try:
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
-        system_instruction=system_prompt,
-        generation_config=genai.types.GenerationConfig(temperature=0.3)
-    )
-except Exception:
-    # Fallback caso a API key não suporte o 2.5 ainda
-    model = genai.GenerativeModel(
-        model_name='gemini-2.0-flash',
-        system_instruction=system_prompt,
-        generation_config=genai.types.GenerationConfig(temperature=0.3)
-    )
-
 st.title("🤖 Consultoria Acadêmica de IA")
 st.caption(f"Powered by Gemini Flash | Especialista em: {nome_programa}")
 st.markdown("Bem-vindo! Descreva sua ideia de projeto, pergunte sobre o perfil dos professores, ou peça indicações de teses alinhadas com seu interesse de pesquisa.")
@@ -217,21 +202,27 @@ if prompt := st.chat_input("Ex: Quero pesquisar sobre governança de dados na sa
     gemini_history = []
     for m in st.session_state.messages[:-1]: # Exclui a última (que acabamos de adicionar)
         role = "model" if m["role"] == "assistant" else "user"
-        gemini_history.append({"role": role, "parts": [m["content"]]})
+        gemini_history.append(content_from_text(role, m["content"]))
         
     # Adiciona a mensagem atual
-    gemini_history.append({"role": "user", "parts": [prompt]})
+    gemini_history.append(content_from_text("user", prompt))
 
     with st.chat_message("assistant"):
         msg_placeholder = st.empty()
         full_res = ""
         
         try:
-            # Envia o histórico completo com streaming
-            response = model.generate_content(gemini_history, stream=True)
+            response = generate_content(
+                contents=gemini_history,
+                api_key=api_key,
+                model_candidates=("gemini-2.5-flash", "gemini-2.0-flash"),
+                system_instruction=system_prompt,
+                temperature=0.3,
+                stream=True,
+            )
 
             for chunk in response:
-                if chunk.text:
+                if getattr(chunk, "text", None):
                     full_res += chunk.text
                     msg_placeholder.markdown(full_res + "▌")
             

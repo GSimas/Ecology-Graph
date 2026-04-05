@@ -1,19 +1,16 @@
 import gzip
 import json
-import toml
 from neo4j import GraphDatabase
 import math
+
+from app_config import get_neo4j_credentials
 
 # ==========================================
 # CONFIGURAÇÕES SEGURAS (Lendo o cofre)
 # ==========================================
-print("🔐 Acessando o cofre de senhas (.streamlit/secrets.toml)...")
+print("🔐 Carregando credenciais do Neo4j (env ou Streamlit secrets)...")
 try:
-    with open(".streamlit/secrets.toml", "r", encoding="utf-8") as f:
-        cofre = toml.load(f)
-        URI = cofre["NEO4J_URI"]
-        USER = cofre["NEO4J_USERNAME"]
-        PASSWORD = cofre["NEO4J_PASSWORD"]
+    URI, USER, PASSWORD = get_neo4j_credentials(required=True)
 except Exception as e:
     print(f"❌ ERRO ao carregar senhas: {e}")
     exit()

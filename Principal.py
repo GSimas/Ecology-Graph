@@ -4,19 +4,14 @@ from streamlit_agraph import agraph, Node, Edge, Config
 import networkx as nx
 import networkx.algorithms.community as nx_comm
 import pandas as pd
-import json
 import plotly.express as px
 import re
 import unicodedata
 from collections import Counter
-import gzip
-import google.generativeai as genai
-import requests
-import urllib.parse
-from neo4j import GraphDatabase
 from streamlit_agraph import Node, Edge
 import time
 
+from app_config import get_gemini_api_key
 from backend import (
     conectar_neo4j, 
     extrair_subgrafo_neo4j,
@@ -69,9 +64,7 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
         if programas_selecionados:
             with st.spinner("Lendo a base consolidada e filtrando os PPGs selecionados. Isso levará apenas alguns segundos..."):
                 try:
-                    with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
-                        base_total = json.load(f)
-                        
+                    base_total = carregar_base_consolidada()
                     dados_filtrados = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
                     
                     if not dados_filtrados:
@@ -235,6 +228,7 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
 
 # --- DASHBOARD PRINCIPAL ---
 dados_completos = st.session_state['dados_completos']
+api_key_app = get_gemini_api_key()
 st.title("🌌 Ecologia do Conhecimento")
 st.subheader(f"Base: {st.session_state['nome_programa']}")
 
@@ -263,10 +257,7 @@ c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 
 
 # --- APRESENTAÇÃO DO PERFIL DINÂMICO ---
-
-try:
-    api_key_app = st.secrets["GEMINI_API_KEY"]
-    
+if api_key_app:
     # Extrai até 25 documentos espaçados uniformemente para criar uma amostra representativa
     amostra_docs = []
     salto = max(1, len(dados_completos) // 25)
@@ -276,10 +267,8 @@ try:
         if len(amostra_docs) >= 25: break
             
     nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
-    
-        
-except KeyError:
-    st.warning("🔑 Chave da API do Gemini não configurada nos secrets locais. O perfil dinâmico está desativado.")
+else:
+    st.warning("🔑 Chave da API do Gemini não configurada em variáveis de ambiente ou secrets. O perfil dinâmico está desativado.")
 st.markdown("<br>", unsafe_allow_html=True)
 
 
@@ -387,9 +376,7 @@ for nome_ppg in nomes_ppgs:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # 4. Descritivo Dinâmico da IA (A Alma do Programa)
-try:
-    api_key_app = st.secrets["GEMINI_API_KEY"]
-    
+if api_key_app:
     amostra_docs = []
     salto = max(1, len(dados_completos) // 25)
     for i in range(0, len(dados_completos), salto):
@@ -400,9 +387,8 @@ try:
     with st.spinner("A IA está analisando a amostra de documentos para sintetizar o perfil epistemológico..."):
         descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
         st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
-        
-except KeyError:
-    st.warning("🔑 Chave da API do Gemini não configurada nos secrets locais.")
+else:
+    st.warning("🔑 Chave da API do Gemini não configurada em variáveis de ambiente ou secrets.")
 st.markdown("---")
 
 

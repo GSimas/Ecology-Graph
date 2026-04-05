@@ -1,4 +1,3 @@
-import os
 import json
 import re
 import unicodedata
@@ -7,13 +6,15 @@ from collections import defaultdict
 from sickle import Sickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
-import google.generativeai as genai
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 import requests
 import difflib
 import time
 from neo4j import GraphDatabase
+
+from app_config import get_gemini_api_key, get_neo4j_credentials
+from gemini_utils import DEFAULT_TEXT_MODELS, generate_content, response_text
 
 # --- MOTOR DE INGESTÃO NEO4J ---
 def popular_banco_grafos(dados, uri="neo4j://localhost:7687", user="neo4j", password="sua_senha_aqui"):
@@ -210,12 +211,6 @@ def realizar_extracao(set_spec, nome_prog=""):
 
 # --- MOTOR DE INTELIGÊNCIA SEMÂNTICA (K-MEANS + NMF + GEMINI) ---
 def aplicar_macrotemas(dados, api_key):
-    genai.configure(api_key=api_key)
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash') 
-    except Exception:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-
     sujeira_academica = [
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
@@ -306,11 +301,14 @@ GRUPOS DE PALAVRAS:
     
     for tentativa in range(max_tentativas):
         try:
-            response = model.generate_content(
-                prompt_humanizado,
-                generation_config=genai.types.GenerationConfig(candidate_count=1, temperature=0.4)
+            response = generate_content(
+                prompt=prompt_humanizado,
+                api_key=api_key,
+                model_candidates=DEFAULT_TEXT_MODELS,
+                temperature=0.4,
+                candidate_count=1,
             )
-            respostas = response.text.strip().split('\n')
+            respostas = response_text(response).strip().split('\n')
             nomes_finais = [re.sub(r'^\d+[\.\s\-]+', '', r).strip().replace('*', '') for r in respostas if len(r) > 3]
             
             if len(nomes_finais) < num_topicos:
@@ -352,9 +350,9 @@ def executar_pipeline_diario():
     print("🚀 INICIANDO PIPELINE DE ECOSSISTEMAS - UFSC")
     print("==================================================")
     
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = get_gemini_api_key()
     if not api_key:
-        print("❌ ERRO: A variável de ambiente 'GEMINI_API_KEY' não foi encontrada.")
+        print("❌ ERRO: GEMINI_API_KEY não encontrada em variáveis de ambiente ou secrets.")
         return
 
     try:
@@ -418,11 +416,16 @@ def executar_pipeline_diario():
 
     # 4. Envio para o Banco de Grafos
     # Exemplo de como chamar no final do pipeline_ufsc.py
-    popular_banco_grafos(
-    dados_finais_consolidados, 
-    uri="neo4j+s://e3b303f3.databases.neo4j.io",
-    password="d8mLtFBC4u5C7idBPmZFhKJOSTmNbU-H_HyaD-iITFU"
-    )
+    neo4j_uri, neo4j_user, neo4j_password = get_neo4j_credentials()
+    if neo4j_uri and neo4j_user and neo4j_password:
+        popular_banco_grafos(
+            dados_finais_consolidados,
+            uri=neo4j_uri,
+            user=neo4j_user,
+            password=neo4j_password,
+        )
+    else:
+        print("⚠️ Neo4j não configurado. Pulando a etapa de injeção no banco.")
 
     print("\n==================================================")
     print("🎯 PIPELINE FINALIZADO COM SUCESSO!")

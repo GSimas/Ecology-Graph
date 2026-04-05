@@ -58,7 +58,7 @@ A plataforma utiliza um modelo de **Arquitetura Híbrida**:
 * **Back-end Matemático:** Pandas, SciPy, NetworkX (Cálculo de métricas em RAM para alta velocidade em filtros tabulares).
 * **Back-end de Grafos:** Neo4j AuraDB (Cloud) para armazenamento persistente da ontologia e consultas estruturais complexas via Cypher.
 * **Visualização de Dados:** Plotly (Gráficos 3D, Linhas, Barras, Scatter), Streamlit-agraph (vis.js para redes).
-* **NLP & IA:** Google Generative AI (Gemini 2.5/2.0 Flash).
+* **NLP & IA:** Google Gen AI SDK (`google-genai`) com Gemini 2.5/2.0 Flash.
 
 ---
 
@@ -75,3 +75,23 @@ A plataforma utiliza um modelo de **Arquitetura Híbrida**:
 ```bash
 git clone [https://github.com/SEU_USUARIO/ecologia-conhecimento.git](https://github.com/SEU_USUARIO/ecologia-conhecimento.git)
 cd ecologia-conhecimento
+```
+
+2. **Instale as dependências:**
+```bash
+pip install -r requirements.txt
+```
+
+3. **Configure as credenciais:**
+O projeto agora aceita tanto `.streamlit/secrets.toml` quanto variáveis de ambiente, o que facilita o deploy no Railway.
+
+Variáveis esperadas:
+```bash
+GEMINI_API_KEY=...
+NEO4J_URI=...
+NEO4J_USERNAME=...
+NEO4J_PASSWORD=...
+```
+
+4. **Deploy no Railway:**
+Cadastre essas quatro chaves em `Variables` no painel do Railway. O app não depende mais de `/app/.streamlit/secrets.toml` para subir em produção.

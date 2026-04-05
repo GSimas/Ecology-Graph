@@ -10,10 +10,10 @@ import re
 import unicodedata
 from collections import Counter
 import gzip
-import google.generativeai as genai
 import requests
 import urllib.parse
 from neo4j import GraphDatabase
+from pyvis.network import Network
 from streamlit_agraph import Node, Edge
 import plotly.express as px
 import pandas as pd
@@ -21,8 +21,12 @@ import numpy as np
 from scipy import stats
 import io
 import itertools
+import math
 import time
 import scipy.stats as sps
+
+from app_config import get_gemini_api_key, get_neo4j_credentials
+from gemini_utils import DEFAULT_FAST_MODELS, DEFAULT_TEXT_MODELS, generate_content, response_text
 
 
 @st.cache_data(show_spinner=False)
@@ -176,12 +180,8 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     
 
 def configurar_gemini():
-    """Configura a chave da API puxando do cofre do Streamlit."""
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        return True
-    except Exception:
-        return False
+    """Confere se há chave disponível via env ou Streamlit secrets."""
+    return bool(get_gemini_api_key())
 
 def extrair_artefatos_llm(titulo, resumo):
     """Envia um prompt estruturado ao Gemini forçando um retorno em JSON."""
@@ -210,16 +210,14 @@ def extrair_artefatos_llm(titulo, resumo):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                response_mime_type="application/json",
-            )
+        response = generate_content(
+            prompt=prompt,
+            model_candidates=DEFAULT_FAST_MODELS,
+            temperature=0.2,
+            response_mime_type="application/json",
         )
-        
-        dicionario_ontologia = json.loads(response.text)
+
+        dicionario_ontologia = json.loads(response_text(response))
         
         if isinstance(dicionario_ontologia, list) and len(dicionario_ontologia) > 0 and isinstance(dicionario_ontologia[0], dict):
             # Extraímos apenas o texto de dentro de cada 'entity' (ou qualquer chave que ela inventar)
@@ -266,7 +264,8 @@ def extrair_artefatos_llm(titulo, resumo):
 def processar_lote_ontologia(dados_completos, tamanho_lote=10, barra_progresso=None, status_texto=None):
     """Processa o lote com cálculo de tempo estimado de conclusão (ETC)."""
     if not configurar_gemini():
-        if status_texto: status_texto.error("Erro: GEMINI_API_KEY não encontrada nos secrets.")
+        if status_texto:
+            status_texto.error("Erro: GEMINI_API_KEY não encontrada em variáveis de ambiente ou secrets.")
         return 0, sum(1 for d in dados_completos if 'ontologia_ia' not in d and d.get('resumo'))
     
     fila_processamento = [d for d in dados_completos if 'ontologia_ia' not in d and d.get('resumo') and str(d.get('resumo')).strip() != ""]
@@ -1085,9 +1084,7 @@ def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
 # Conexão com o Banco de Grafos
 @st.cache_resource
 def conectar_neo4j():
-    uri = st.secrets["NEO4J_URI"]
-    user = st.secrets["NEO4J_USERNAME"]
-    pwd = st.secrets["NEO4J_PASSWORD"]
+    uri, user, pwd = get_neo4j_credentials(required=True)
     return GraphDatabase.driver(uri, auth=(user, pwd))
 
 def extrair_subgrafo_neo4j(driver, nome_programa, limite=50):
@@ -1274,7 +1271,12 @@ def calcular_sna_global(dados):
     
     # 4. Cálculo de Betweenness (60% do progresso - Parte mais pesada)
     barra.progress(45, text="🌉 Calculando Betweenness (Intermediação)... Isso pode levar alguns segundos...")
-    bet_cent = nx.betweenness_centrality(G)
+    total_nos = G.number_of_nodes()
+    if total_nos > 1500:
+        k_aproximado = min(250, max(50, int(math.sqrt(total_nos) * 4)))
+        bet_cent = nx.betweenness_centrality(G, k=k_aproximado, seed=42)
+    else:
+        bet_cent = nx.betweenness_centrality(G)
     
     # 5. Cálculo de Closeness (80% do progresso)
     barra.progress(75, text="🎯 Calculando Closeness (Proximidade Central)...")
@@ -1485,10 +1487,6 @@ def renderizar_nuvem_interativa_html(word_freq_dict):
 @st.cache_data(show_spinner=False)
 def gerar_descritivo_sessao(nomes_programas, amostra_textos, api_key):
     """Gera o descritivo na hora e salva em cache para economizar requisições."""
-    genai.configure(api_key=api_key)
-    try: model = genai.GenerativeModel('gemini-2.5-flash')
-    except Exception: model = genai.GenerativeModel('gemini-2.0-flash')
-
     nomes_str = ", ".join(nomes_programas)
     prompt = f"""Você é um analista sênior de avaliação acadêmica.
 Sua missão é criar um parágrafo descritivo e direto (máximo de 60 palavras) apresentando o perfil de pesquisa e o ecossistema do(s) seguinte(s) programa(s): {nomes_str}.
@@ -1505,8 +1503,13 @@ Diretrizes rigorosas:
 - Retorne APENAS o parágrafo limpo.
 """
     try:
-        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0.3))
-        return response.text.strip().replace('**', '').replace('"', '')
+        response = generate_content(
+            prompt=prompt,
+            api_key=api_key,
+            model_candidates=DEFAULT_TEXT_MODELS,
+            temperature=0.3,
+        )
+        return response_text(response).strip().replace('**', '').replace('"', '')
     except Exception as e:
         return f"Não foi possível gerar a síntese dinâmica no momento. (Aviso: {e})"
 

@@ -13,6 +13,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+with st.sidebar:
+    st.image("ecograd - logo.png", use_container_width=True)
+    st.markdown("---")
+    st.markdown("### 🎓 Sobre o EcoGrad")
+    st.markdown("O **EcoGrad** é uma plataforma analítica que mapeia e visualiza as redes de produção acadêmica da Pós-Graduação (Teses e Dissertações) e Graduação (TCCs).")
+    st.markdown("### ⚙️ Como Funciona")
+    st.markdown("Os documentos são processados usando algoritmos de redes complexas (Ciência de Redes) aliados a Inteligência Artificial. Isso desvela como pesquisadores, teorias e ferramentas se interconectam na academia.")
+    st.markdown("### 🧭 Como Utilizar")
+    st.markdown("1. **Selecione os cursos** e origens na aba principal.\n2. Navegue pelos **Dashboards** e visualize perfis no Motor de Busca.\n3. Explore os dados de um Autor, Orientador ou Conceito.\n4. Acesse **Análises Avançadas** para métricas detalhadas.")
+    st.markdown("---")
+    st.markdown("Desenvolvido por **Gustavo Simas**<br>[🔗 GitHub: GSimas](https://github.com/GSimas)", unsafe_allow_html=True)
 
 # Estilização Adaptativa Nativa
 st.markdown("""

@@ -35,6 +35,17 @@ from backend import (
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
+with st.sidebar:
+    st.image("ecograd - logo.png", use_container_width=True)
+    st.markdown("---")
+    st.markdown("### 🎓 Sobre o EcoGrad")
+    st.markdown("O **EcoGrad** é uma plataforma analítica que mapeia e visualiza as redes de produção acadêmica da Pós-Graduação (Teses e Dissertações) e Graduação (TCCs).")
+    st.markdown("### ⚙️ Como Funciona")
+    st.markdown("Os documentos são processados usando algoritmos de redes complexas (Ciência de Redes) aliados a Inteligência Artificial. Isso desvela como pesquisadores, teorias e ferramentas se interconectam na academia.")
+    st.markdown("### 🧭 Como Utilizar")
+    st.markdown("1. **Selecione os cursos** e origens na aba principal.\n2. Navegue pelos **Dashboards** e visualize perfis no Motor de Busca.\n3. Explore os dados de um Autor, Orientador ou Conceito.\n4. Acesse **Análises Avançadas** para métricas detalhadas.")
+    st.markdown("---")
+    st.markdown("Desenvolvido por **Gustavo Simas**<br>[🔗 GitHub: GSimas](https://github.com/GSimas)", unsafe_allow_html=True)
 
 st.markdown("""
     <style>
@@ -55,7 +66,7 @@ if 'macrotemas_computados' not in st.session_state:
 
 # --- TELA DE SELEÇÃO INICIAL (CARREGAMENTO PREGUIÇOSO / LAZY LOADING) ---
 if 'dados_completos' not in st.session_state or st.session_state.get('recarregar'):
-    st.title("🔌 Seleção de Coleções (PPGs e TCCs)")
+    st.title("🔌 Seleção de Coleções (Teses, Dissertações e TCCs)")
     st.markdown("Selecione as coleções que deseja analisar.")
     
     catalogo_leve = carregar_catalogo_programas()
@@ -66,7 +77,7 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
     
     c1_sel, c2_sel = st.columns(2)
     with c1_sel:
-        programas_selecionados = st.multiselect("Pós-Graduação (PPG):", programas_disponiveis)
+        programas_selecionados = st.multiselect("Pós-Graduação (Teses e Dissertações):", programas_disponiveis)
     with c2_sel:
         tccs_selecionados = st.multiselect("Graduação (TCC):", tccs_disponiveis)
     

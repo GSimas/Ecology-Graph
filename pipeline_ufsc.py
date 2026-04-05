@@ -232,7 +232,8 @@ def aplicar_macrotemas(dados, api_key):
         "study", "analysis", "based", "using", "results", "work", "research", "paper", "thesis", "dissertation",
         "analise", "estudo", "desenvolvimento", "proposta", "metodo", "processo", "sistema", "modelo", "projeto",
         "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação",
-        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave"
+        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave", "abstract", "resumo", "palavras", "chave", "keywords", "introduction", "conclusion", "methodology", 
+        "this", "that", "which", "from", "are", "were", "was", "have", "has", "been", "can", "could", "would"
     ]
 
     textos = []
@@ -444,15 +445,15 @@ def executar_pipeline_diario():
             dados_tcc = realizar_extracao(set_spec, nome_prog=curso)
             
             if dados_tcc:
-                # O ecossistema base será Graduação, pois não tem CAPES
-                # Pode complementar com uma área se souber, mas por padrão deixaremos como Graduação
-                ecossistema = "Graduação"
+            
+                nome_curso_limpo = curso.replace("TCC", "").strip()
+                ecossistema_tcc = f"Graduação - {nome_curso_limpo}"
                 
                 for doc in dados_tcc:
-                    doc['ecossistema_afinidade'] = ecossistema
+                    doc['ecossistema_afinidade'] = ecossistema_tcc
                 
-                documentos_tcc_por_ecossistema[ecossistema].extend(dados_tcc)
-                print(f"   [+] {len(dados_tcc)} TCCs extraídos de {curso}.")
+                documentos_tcc_por_ecossistema[ecossistema_tcc].extend(dados_tcc)
+                print(f"   [+] {len(dados_tcc)} TCCs alocados na Área: {ecossistema_tcc}.")
                 
         if documentos_tcc_por_ecossistema:
             print("\n--- INICIANDO COMPUTAÇÃO SEMÂNTICA (TCCs) ---")

@@ -222,9 +222,15 @@ def realizar_extracao(set_spec, nome_prog=""):
         
     return dados_extraidos
 
-# --- MOTOR DE INTELIGÊNCIA SEMÂNTICA (K-MEANS + NMF + GEMINI) ---
 def aplicar_macrotemas(dados, api_key):
-    sujeira_academica = [
+    import re
+    import time
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import NMF
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+    
+    sujeira_academica = list(set([ # Uso de set() para remover qualquer duplicata acidental
         "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no", "se", "na", 
         "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu", "sua", "ou", "ser",
         "neste", "esta", "está", "este", "pelo", "pela", "seus", "suas", "nas", "aos", "meu", "sua", "através",
@@ -232,17 +238,22 @@ def aplicar_macrotemas(dados, api_key):
         "study", "analysis", "based", "using", "results", "work", "research", "paper", "thesis", "dissertation",
         "analise", "estudo", "desenvolvimento", "proposta", "metodo", "processo", "sistema", "modelo", "projeto",
         "utilização", "uso", "efeito", "avaliação", "verificação", "experimental", "numérica", "aplicação",
-        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave", "abstract", "resumo", "palavras", "chave", "keywords", "introduction", "conclusion", "methodology", 
-        "this", "that", "which", "from", "are", "were", "was", "have", "has", "been", "can", "could", "would"
-    ]
+        "sobre", "entre", "quando", "onde", "qual", "quais", "abstract", "resumo", "palavras", "chave", "keywords", 
+        "introduction", "conclusion", "methodology", "are", "were", "was", "have", "has", "been", "can", "could", "would"
+    ]))
 
+    # OTIMIZAÇÃO 2: Pré-compilação do Regex fora do loop
+    padrao_limpeza = re.compile(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]')
     textos = []
+    
     for doc in dados:
         bruto = f"{(doc.get('titulo', '') + ' ') * 3} {' '.join(doc.get('palavras_chave', []))} {doc.get('resumo', '')}"
-        limpo = re.sub(r'[^a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\s]', ' ', bruto).lower()
+        limpo = padrao_limpeza.sub(' ', bruto).lower()
         textos.append(limpo)
 
-    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=1000)
+    # OTIMIZAÇÃO 1: ngram_range=(1, 2) para capturar bigramas (ex: "machine learning")
+    # Aumentei max_features para 1500 para dar espaço aos novos termos compostos
+    vectorizer = TfidfVectorizer(max_df=0.8, min_df=2, stop_words=sujeira_academica, max_features=1500, ngram_range=(1, 2))
     
     try:
         tfidf_matrix = vectorizer.fit_transform(textos)
@@ -250,21 +261,17 @@ def aplicar_macrotemas(dados, api_key):
         print(f" [!] Erro na vetorização matemática: {e}")
         return dados
 
-    # =========================================================================
-    # NOVA LÓGICA: CÁLCULO DA QUANTIDADE ÓTIMA DE MACROTEMAS (SILHOUETTE SCORE)
-    # =========================================================================
     print("   [+] Calculando a quantidade ótima de clusters matemáticos...")
     min_k = 4
-    # O limite máximo testa até 20 temas, mas respeita ecossistemas muito pequenos
     max_k = min(20, max(5, tfidf_matrix.shape[0] // 10)) 
     
     melhor_k = min_k
     melhor_score = -1
     
-    # Testa os cenários só se houver documentos suficientes
     if tfidf_matrix.shape[0] > min_k:
         for k in range(min_k, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            # OTIMIZAÇÃO 3: n_init='auto' deixa o algoritmo mais rápido nas versões recentes do scikit-learn
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
             labels = kmeans.fit_predict(tfidf_matrix)
             score = silhouette_score(tfidf_matrix, labels)
             
@@ -276,7 +283,6 @@ def aplicar_macrotemas(dados, api_key):
         
     print(f"   [+] Quantidade ótima definida: {melhor_k} macrotemas (Score de Silhueta: {melhor_score:.3f})")
     num_topicos = melhor_k
-    # =========================================================================
 
     try:
         nmf_model = NMF(n_components=num_topicos, random_state=42, init='nndsvd', max_iter=500)
@@ -294,7 +300,7 @@ def aplicar_macrotemas(dados, api_key):
     contexto = "\n".join(clusters)
 
     prompt_humanizado = f"""Você é um especialista em epistemologia e taxonomia acadêmica.
-Abaixo estão {num_topicos} grupos de palavras-chave extraídas de agrupamentos matemáticos (NMF) de teses e dissertações.
+Abaixo estão {num_topicos} grupos de palavras-chave extraídas de agrupamentos matemáticos (NMF) de trabalhos acadêmicos.
 Sua missão é batizar cada grupo com um nome definitivo e que represente com precisão essa subárea do conhecimento.
 
 Diretrizes rigorosas:
@@ -306,15 +312,13 @@ Diretrizes rigorosas:
 GRUPOS DE PALAVRAS:
 {contexto}"""
 
-    # =========================================================================
-    # COMUNICAÇÃO COM O GEMINI COM PROTEÇÃO ANTI-BLOQUEIO (RATE LIMIT 429)
-    # =========================================================================
-    
     max_tentativas = 3
     nomes_finais = []
     
     for tentativa in range(max_tentativas):
         try:
+            from gemini_utils import generate_content, response_text, DEFAULT_TEXT_MODELS # Ajuste o import conforme sua estrutura
+            
             response = generate_content(
                 prompt=prompt_humanizado,
                 api_key=api_key,
@@ -328,35 +332,32 @@ GRUPOS DE PALAVRAS:
             if len(nomes_finais) < num_topicos:
                 raise ValueError(f"Gemini retornou apenas {len(nomes_finais)} nomes. Esperados: {num_topicos}")
                 
-            break # Sucesso! Quebra o loop de retentativas e segue o baile
+            break 
             
         except Exception as e:
             erro_str = str(e)
-            # Se o erro for de Cota / Limite de Requisições (429)
             if "429" in erro_str or "Quota" in erro_str or "exhausted" in erro_str.lower():
-                tempo_espera = 60 # Espera 1 minuto para a cota do Google resetar
+                tempo_espera = 60
                 print(f"   [⏳] Limite da API atingido. Pausando {tempo_espera}s... (Tentativa {tentativa + 1}/{max_tentativas})")
                 time.sleep(tempo_espera)
             else:
-                # Se for outro erro (ex: internet caiu, erro interno do Google), não adianta esperar
                 print(f"   [!] Erro inesperado na API Gemini ({e}).")
                 break 
 
-    # Fallback Seguro: Se gastou todas as tentativas ou deu erro fatal, faz o batismo manual
     if not nomes_finais or len(nomes_finais) < num_topicos:
         print("   [!] Aplicando Fallback de nomes (extração matemática direta)...")
         nomes_finais = []
         for c in clusters:
             palavras = c.split(': ')[1].split(', ')
-            nomes_finais.append(f"{palavras[0].title()} e {palavras[1].title()}")
+            # Fallback seguro contra clusters com menos de 2 palavras
+            nome_fallback = f"{palavras[0].title()} e {palavras[1].title()}" if len(palavras) > 1 else palavras[0].title()
+            nomes_finais.append(nome_fallback)
 
-    # Aplica os nomes aos documentos
     for i, doc in enumerate(dados):
         top_idx = nmf_matrix[i].argmax()
         doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
 
     return dados
-
 
 # --- ORQUESTRAÇÃO DO PIPELINE ---
 def executar_pipeline_diario():

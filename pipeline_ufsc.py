@@ -353,9 +353,22 @@ GRUPOS DE PALAVRAS:
             nome_fallback = f"{palavras[0].title()} e {palavras[1].title()}" if len(palavras) > 1 else palavras[0].title()
             nomes_finais.append(nome_fallback)
 
+    # Aplica os nomes aos documentos E CALCULA A PUREZA
     for i, doc in enumerate(dados):
         top_idx = nmf_matrix[i].argmax()
+        pesos_doc = nmf_matrix[i]
+        
         doc['macrotema'] = nomes_finais[top_idx] if top_idx < len(nomes_finais) else "Interseções Multidisciplinares"
+        
+        # 1. CÁLCULO DA PUREZA TEMÁTICA (0 a 100%)
+        soma_pesos = pesos_doc.sum()
+        pureza = (pesos_doc[top_idx] / soma_pesos) * 100 if soma_pesos > 0 else 0.0
+        doc['pureza_nmf'] = round(pureza, 2)
+        
+        if pureza >= 85.0: doc['perfil_pesquisa'] = "Altamente Especializado"
+        elif pureza >= 60.0: doc['perfil_pesquisa'] = "Especialista"
+        elif pureza >= 40.0: doc['perfil_pesquisa'] = "Híbrido / Fronteira"
+        else: doc['perfil_pesquisa'] = "Generalista / Transversal"
 
     return dados
 

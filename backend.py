@@ -1048,7 +1048,8 @@ def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
         if tipo_busca == 'Palavra-chave' and tipo_node != 'Palavra-chave': continue
         if tipo_busca == 'Macrotema' and tipo_node != 'Macrotema': continue
         
-        intersecao = len(perfil_foco.intersection(features))
+        intersecao_itens = perfil_foco.intersection(features)
+        intersecao = len(intersecao_itens)
         if intersecao == 0: continue # Sem nada em comum = Similaridade 0
         
         uniao = len(perfil_foco.union(features))
@@ -1057,7 +1058,8 @@ def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
         resultados.append({
             'Item': node,
             'Similaridade (%)': round(jaccard * 100, 2),
-            'Traços em Comum': intersecao,
+            'Qtd. Traços': intersecao,
+            'Traços em Comum': ", ".join(sorted(list(intersecao_itens))),
             'Nível': niveis_docs.get(node, 'Outros') if tipo_node == 'Documento' else None,
             'Tipo': tipo_node
         })
@@ -1139,6 +1141,159 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
+def _normalizar_nivel(nivel):
+    nivel_txt = str(nivel or "")
+    if "Tese" in nivel_txt:
+        return "Teses"
+    if "Disserta" in nivel_txt:
+        return "Dissertações"
+    return "Outros"
+
+def _extrair_entidades_por_tipo(doc, tipo):
+    if tipo == "Orientador":
+        ori = doc.get("orientador")
+        return [ori] if ori else []
+    if tipo == "Co-orientador":
+        return list(set([co for co in doc.get("co_orientadores", []) if co]))
+    if tipo == "Palavra-chave":
+        return list(set([pk for pk in doc.get("palavras_chave", []) if pk]))
+    if tipo == "Macrotema":
+        mt = doc.get("macrotema", "Multidisciplinar / Transversal")
+        return [mt]
+    return []
+
+def _renderizar_tabela_ql(resumo_df, titulo):
+    if resumo_df.empty:
+        return
+
+    st.write(titulo)
+    max_tot = int(resumo_df["Total"].max()) if not resumo_df.empty else 100
+
+    def color_ql(val):
+        try:
+            v = float(val)
+            if v > 1:
+                return "color: #00FF00; font-weight: bold;"
+            if v < 1:
+                return "color: #FF4B4B;"
+            return "color: #F8E71C;"
+        except:
+            return ""
+
+    styler = resumo_df.style.map(color_ql, subset=["Valor QL"])
+    st.dataframe(
+        styler,
+        width='stretch',
+        hide_index=True,
+        column_config={
+            "Total": st.column_config.ProgressColumn("Total", min_value=0, max_value=max_tot, format="%d"),
+            "Teses": st.column_config.ProgressColumn("Teses", min_value=0, max_value=max_tot, format="%d"),
+            "Dissertações": st.column_config.ProgressColumn("Dissertações", min_value=0, max_value=max_tot, format="%d"),
+            "Outros": st.column_config.ProgressColumn("Outros", min_value=0, max_value=max_tot, format="%d"),
+            "Valor QL": st.column_config.NumberColumn("Valor QL", format="%.2f"),
+        },
+    )
+    st.caption("*Nota: QL > 1 indica especialização acima da média global da base.*")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+def gerar_tabela_ql_cruzado_perfil(docs_perfil, dados_totais, tipos_alvo, titulo="**📊 Frequência Temática e Especialização (QL):**"):
+    """Gera tabela de QL para entidades-alvo de um perfil (Orientador/Co/PK/Macrotema)."""
+    if not docs_perfil or not dados_totais or not tipos_alvo:
+        return
+
+    total_docs_global = len(dados_totais)
+    total_docs_perfil = len(docs_perfil)
+    if total_docs_global == 0 or total_docs_perfil == 0:
+        return
+
+    contagens_globais = {}
+    for tipo in tipos_alvo:
+        c = Counter()
+        for d in dados_totais:
+            for entidade in _extrair_entidades_por_tipo(d, tipo):
+                c[entidade] += 1
+        contagens_globais[tipo] = c
+
+    linhas = []
+    for tipo in tipos_alvo:
+        agregados = {}
+        for d in docs_perfil:
+            nivel = _normalizar_nivel(d.get("nivel_academico"))
+            for entidade in _extrair_entidades_por_tipo(d, tipo):
+                if entidade not in agregados:
+                    agregados[entidade] = {"Teses": 0, "Dissertações": 0, "Outros": 0}
+                agregados[entidade][nivel] += 1
+
+        for entidade, conts in agregados.items():
+            total_local = conts["Teses"] + conts["Dissertações"] + conts["Outros"]
+            total_global_entidade = contagens_globais[tipo].get(entidade, 0)
+            if total_global_entidade == 0:
+                ql = 0.0
+            else:
+                ql = (total_local / total_docs_perfil) / (total_global_entidade / total_docs_global)
+
+            linhas.append({
+                "Entidade": entidade,
+                "Tipo": tipo,
+                "Teses": conts["Teses"],
+                "Dissertações": conts["Dissertações"],
+                "Outros": conts["Outros"],
+                "Total": total_local,
+                "Valor QL": round(ql, 2),
+            })
+
+    if not linhas:
+        return
+
+    resumo = pd.DataFrame(linhas)
+    resumo = resumo[["Entidade", "Tipo", "Teses", "Dissertações", "Outros", "Total", "Valor QL"]]
+    resumo = resumo.sort_values(by=["Tipo", "Valor QL", "Total"], ascending=[True, False, False])
+    _renderizar_tabela_ql(resumo, titulo)
+
+@st.cache_data(show_spinner=False)
+def gerar_base_boxplot_ql(dados_lista, tipo_entidade, entidades):
+    """Gera valores de QL por nível acadêmico para alimentar boxplot."""
+    if not dados_lista or not entidades:
+        return pd.DataFrame()
+
+    docs_validos = [d for d in dados_lista if d.get("titulo")]
+    if not docs_validos:
+        return pd.DataFrame()
+
+    total_docs = len(docs_validos)
+    docs_por_nivel = {"Teses": 0, "Dissertações": 0, "Outros": 0}
+    for d in docs_validos:
+        docs_por_nivel[_normalizar_nivel(d.get("nivel_academico"))] += 1
+
+    linhas = []
+    for entidade in entidades:
+        docs_entidade = []
+        for d in docs_validos:
+            if entidade in _extrair_entidades_por_tipo(d, tipo_entidade):
+                docs_entidade.append(d)
+
+        total_entidade = len(docs_entidade)
+        if total_entidade == 0:
+            continue
+
+        local_por_nivel = {"Teses": 0, "Dissertações": 0, "Outros": 0}
+        for d in docs_entidade:
+            local_por_nivel[_normalizar_nivel(d.get("nivel_academico"))] += 1
+
+        for nivel in ["Teses", "Dissertações", "Outros"]:
+            base_global_nivel = docs_por_nivel.get(nivel, 0)
+            if base_global_nivel == 0:
+                ql = 0.0
+            else:
+                ql = (local_por_nivel[nivel] / total_entidade) / (base_global_nivel / total_docs)
+            linhas.append({
+                "Entidade": entidade,
+                "Nível": nivel,
+                "Valor QL": round(ql, 4),
+            })
+
+    return pd.DataFrame(linhas)
+
 def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
     """Gera tabela de Orientadores, Co-orientadores e PKs de um Macrotema, incluindo o QL."""
     if not docs_macrotema: return
@@ -1215,7 +1370,7 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
     
     st.dataframe(
         styler, 
-        use_container_width=True, 
+        width='stretch', 
         hide_index=True,
         column_config={
             "Total": st.column_config.ProgressColumn("Total", min_value=0, max_value=max_tot, format="%d"),
@@ -1281,6 +1436,10 @@ def calcular_sna_global(dados):
     # 5. Cálculo de Closeness (80% do progresso)
     barra.progress(75, text="🎯 Calculando Closeness (Proximidade Central)...")
     close_cent = nx.closeness_centrality(G)
+
+    # 5.5 Cálculo de Clustering (Densidade da Vizinhança) - NOVO
+    barra.progress(80, text="🕸️ Calculando Densidade Local (Clustering)...")
+    clust_cent = nx.clustering(G)
     
     # 6. Identificação de Comunidades (90% do progresso)
     barra.progress(85, text="🏘️ Detectando Clusters e Comunidades (Algoritmo de Louvain)...")
@@ -1299,6 +1458,7 @@ def calcular_sna_global(dados):
         'Degree Centrality': deg_cent.get(node, 0), 
         'Betweenness': bet_cent.get(node, 0), 
         'Closeness': close_cent.get(node, 0),
+        'Clustering': clust_cent.get(node, 0), # <--- NOVA LINHA
         'Comunidade': mapa_comunidades.get(node, 'N/A'), 
         'Ranking Global': rank_bet.get(node, 'N/A')
     } for node in G.nodes()}
@@ -1529,7 +1689,7 @@ def gerar_tabela_macrotemas_perfil(docs, dados_totais):
     
     st.dataframe(
         styler2, 
-        use_container_width=True, 
+        width='stretch', 
         hide_index=True,
         column_config={
             "Total": st.column_config.ProgressColumn("Total", min_value=0, max_value=max_tot, format="%d"),
@@ -1725,3 +1885,13 @@ def carregar_catalogo_tcc_frontend():
             return json.load(f)
     except FileNotFoundError:
         return []
+
+def calcular_raridade_semantica(doc_pks, contagem_pks_global, total_docs):
+    """Calcula o IDF médio das palavras-chave de um documento."""
+    if not doc_pks or total_docs == 0: return 0.0
+    idfs = []
+    for pk in doc_pks:
+        freq = contagem_pks_global.get(pk, 1) # O mínimo é 1 pra evitar divisão por 0
+        idf = math.log10(total_docs / freq)
+        idfs.append(idf)
+    return sum(idfs) / len(idfs)

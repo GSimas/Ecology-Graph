@@ -19,6 +19,8 @@ import datetime
 import time
 
 from backend import (
+    plotar_mapa_tematico,
+    plotar_grafico_3d_sna,
     gerar_grafo_ecologia_memes_agraph,
     calcular_sna_global,
     calcular_maturidade_rede,
@@ -33,13 +35,11 @@ from backend import (
     preparar_dados_base_df,
     renderizar_nuvem_interativa_html,
     preparar_dataframe,
-    detetar_explosoes,
-    gerar_grafo_genealogico,
     calcular_burt,
-    preparar_sankey,
     calcular_metricas_memeticas,
     preparar_sankey_temporal,
-    processar_lote_ontologia
+    processar_lote_ontologia,
+    gerar_base_boxplot_ql
 )
 
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
@@ -67,7 +67,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 with st.sidebar:
-    st.image("ecograd - logo.png", use_container_width=True)
+    st.image("ecograd - logo.png", width='stretch')
     st.markdown("---")
     st.markdown("### 🎓 Sobre o EcoGrad")
     st.markdown("O **EcoGrad** é uma plataforma analítica que mapeia e visualiza as redes de produção acadêmica da Pós-Graduação (Teses e Dissertações) e Graduação (TCCs).")
@@ -140,12 +140,9 @@ st.subheader(f"Base de Dados: {nome_programa}")
 st.markdown("---")
 
 # Abas Principais (Incluindo a Exploração Global como a primeira)
-tab_exploracao, tab_burst, tab_genealogia, tab_furos, tab_sankey, tab_memes = st.tabs([
+tab_exploracao, tab_fluxos, tab_memes = st.tabs([
     "🔭 Exploração Global", 
-    "🔥 Burst", 
-    "🌳 Genealogia", 
-    "🕳️ Furos (Burt)", 
-    "🌊 Fluxos (Sankey)", 
+    "🌊 Fluxos", 
     "🧬 Memética"
 ])
 
@@ -163,7 +160,8 @@ with tab_exploracao:
         col_s3.metric("Entropia (H)", f"{m_sna['entropia']:.2f} bits")
         col_s4.metric("Clustering Médio", f"{m_sna['clustering']:.4f}")
 
-        with st.expander("📊 Estatísticas de Conectividade & 🧠 Influência e Estrutura (Médias)"):
+        st.markdown("#### 📊 Estatísticas de Conectividade & 🧠 Influência e Estrutura (Médias)")
+        with st.container():
             col_exp1, col_exp2 = st.columns(2)
             with col_exp1:
                 st.markdown("**Conectividade (Links por Nó)**")
@@ -182,7 +180,7 @@ with tab_exploracao:
                 c_i3.metric("Restrição (Burt)", f"{m_sna['constraint_avg']:.4f}")
                 c_i4.metric("Redundância", f"{m_sna['redundancia']:.4f}")
 
-    with st.expander("📚 Glossário de Métricas Básicas"):
+    with st.expander("📚 Glossário de Métricas"):
         st.markdown("""
         ### Topologia e Fluxo
         * **Densidade:** Proporção de conexões reais frente às possíveis. Indica quão "povoada" está a rede.
@@ -197,7 +195,6 @@ with tab_exploracao:
         * **Redundância:** Indica o excesso de caminhos para a mesma informação. É o inverso da eficiência na otimização de fluxos.
         """)
 
-    st.markdown("---")
     st.markdown("### 🧬 Métricas de Ecologia Profunda (SNA Avançado)")
     st.caption("Diagnóstico estrutural e físico da maturidade do ecossistema de conhecimento.")
 
@@ -258,13 +255,159 @@ with tab_exploracao:
 
     st.markdown("---")
     
+    # --- MÓDULO DE MACROTEMAS ---
+    st.header("🧠 Análise Temática Estrutural")
+
+    # --- NOVA TABELA ROBUSTA DE MACROTEMAS ---
+    O_total = len(dados_completos)
+    contagem_ori = Counter([d.get('orientador') for d in dados_completos if d.get('orientador')])
+    contagem_coori = Counter([co for d in dados_completos for co in d.get('co_orientadores', [])])
+
+    linhas_tabela = []
+    macrotemas_unicos = set([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos])
+
+    for mt in macrotemas_unicos:
+        docs_mt = [d for d in dados_completos if d.get('macrotema', 'Multidisciplinar / Transversal') == mt]
+        O_k = len(docs_mt)
+        
+        teses = sum(1 for d in docs_mt if 'Tese' in d.get('nivel_academico', ''))
+        dissertacoes = sum(1 for d in docs_mt if 'Disserta' in d.get('nivel_academico', ''))
+        
+        anos = [int(d['ano']) for d in docs_mt if d.get('ano') and str(d['ano']).isdigit()]
+        ano_antigo = min(anos) if anos else "-"
+        ano_recente = max(anos) if anos else "-"
+        ano_modal = Counter(anos).most_common(1)[0][0] if anos else "-"
+        
+        def top_ql(entidades_na_mt, contagem_global):
+            max_ql = -1
+            top_ent = "-"
+            contagem_local = Counter(entidades_na_mt)
+            for ent, O_ik in contagem_local.items():
+                O_i = contagem_global.get(ent, 0)
+                if O_i > 0 and O_k > 0:
+                    ql = (O_ik / O_i) / (O_k / O_total)
+                    if ql > max_ql:
+                        max_ql = ql
+                        top_ent = ent
+                    elif ql == max_ql:
+                        if O_ik > contagem_local.get(top_ent, 0): top_ent = ent
+            return top_ent, max_ql
+
+        oris_mt = [d.get('orientador') for d in docs_mt if d.get('orientador')]
+        top_ori, ql_ori = top_ql(oris_mt, contagem_ori)
+        
+        cooris_mt = [co for d in docs_mt for co in d.get('co_orientadores', [])]
+        top_coori, ql_coori = top_ql(cooris_mt, contagem_coori)
+        
+        mt_sna = sna_global.get(mt, {})
+        
+        linhas_tabela.append({
+            "Macrotema": mt,
+            "Docs": O_k,
+            "Teses": teses,
+            "Dissertações": dissertacoes,
+            "Grau": mt_sna.get('Grau Absoluto', 0),
+            "Betweenness": round(mt_sna.get('Betweenness', 0.0), 4),
+            "Closeness": round(mt_sna.get('Closeness', 0.0), 4),
+            "Especialista (Orientador)": f"{top_ori} (QL: {round(ql_ori,1)})" if top_ori != "-" else "-",
+            "Especialista (Co-orientador)": f"{top_coori} (QL: {round(ql_coori,1)})" if top_coori != "-" else "-",
+            "Início": ano_antigo,
+            "Pico Modal": ano_modal,
+            "Recente": ano_recente
+        })
+        
+    df_temas = pd.DataFrame(linhas_tabela).sort_values(by="Docs", ascending=False)
+
+
+    # --- ABAS DA SEÇÃO TEMÁTICA ---
+    tab_tm1, tab_tm2, tab_tm3, tab_tm4 = st.tabs([
+        "📊 Tabela Geral", 
+        "🧭 Mapa Temático (Macrotemas)", 
+        "🧭 Mapa Temático (Palavras-chave)",
+        "🧊 Espaço Topológico 3D"
+    ])
+
+    with tab_tm1:
+        st.markdown("Consolidação dos dados por categoria metodológica.")
+        st.dataframe(df_temas, width='stretch', hide_index=True)
+
+    with tab_tm2:
+        st.markdown("O mapa classifica os macrotemas em 4 quadrantes baseados em seu papel ecológico na rede.")
+        if not df_temas.empty:
+            fig_mapa_macro = plotar_mapa_tematico(
+                df_plot=df_temas,
+                x_col="Betweenness",
+                y_col="Grau",
+                size_col="Docs",
+                label_col="Macrotema",
+                title="Thematic Map - Macrotemas do PPG"
+            )
+            st.plotly_chart(fig_mapa_macro, width='stretch')
+
+    with tab_tm3:
+        st.markdown("Análise granulada dos micro-conceitos mais frequentes.")
+        
+        # Prepara o DataFrame dinâmico para as Top 50 Palavras-chave
+        kw_data = []
+        # Usamos o contagem_pk que já pegamos para a tabela, ou reconstruímos
+        todas_pks = [pk for d in dados_completos for pk in d.get('palavras_chave', [])]
+        kw_counter = Counter(todas_pks)
+        
+        # Limitar aos 40 principais para o mapa não virar uma "nuvem de poluição visual"
+        top_kws = [kw for kw, count in kw_counter.most_common(40)] 
+        
+        for kw in top_kws:
+            kw_sna = sna_global.get(kw, {})
+            kw_data.append({
+                "Palavra-chave": kw,
+                "Frequência": kw_counter[kw],
+                "Betweenness": kw_sna.get('Betweenness', 0.0),
+                "Grau": kw_sna.get('Grau Absoluto', 0)
+            })
+            
+        df_kw = pd.DataFrame(kw_data)
+        
+        if not df_kw.empty:
+            fig_mapa_kw = plotar_mapa_tematico(
+                df_plot=df_kw,
+                x_col="Betweenness",
+                y_col="Grau",
+                size_col="Frequência",
+                label_col="Palavra-chave",
+                title="Thematic Map - Top 40 Palavras-chave"
+            )
+            st.plotly_chart(fig_mapa_kw, width='stretch')
+
+    with tab_tm4:
+        st.markdown("### 🧊 Distribuição Espacial do Ecossistema")
+        st.caption("Esta visualização tridimensional permite identificar a arquitetura da rede. Itens no topo do eixo **Betweenness** são os grandes intermediadores, enquanto o eixo **Closeness** revela os centros nervosos de disseminação.")
+        
+        # Botão de seleção de categoria (Radio horizontal para parecer um menu de botões)
+        categoria_3d = st.radio(
+            "Selecione a Dimensão para Visualizar:", 
+            ["Documento", "Autor", "Orientador", "Palavra-chave", "Macrotema"],
+            horizontal=True,
+            key="selector_3d_global"
+        )
+        
+        with st.spinner(f"Processando geometria 3D para {categoria_3d}s..."):
+            # Chamamos a função sem o 'termo_destaque' para mostrar a visão global
+            fig_3d_global = plotar_grafico_3d_sna(sna_global, categoria_3d)
+            
+            if fig_3d_global:
+                st.plotly_chart(fig_3d_global, width='stretch', height=800)
+            else:
+                st.warning(f"Não há dados suficientes para gerar o gráfico 3D de {categoria_3d}s.")
+
+    st.markdown("---")
+    # A partir daqui, o código de "# --- MOTOR DE BUSCA (EGO-GRAPH) ---" continua exatamente igual.
     # Sub-Menu Horizontal substituindo as antigas abas da Exploração Global
     opcao_exploracao = st.radio(
         "Navegue pelas ferramentas de Exploração Global:",
         ["🕸️ Grafo Interativo", "🏆 Análise Estrutural", "📈 Evolução Histórica", "☁️ Lexicometria", "🔗 Co-ocorrência", "📥 Exportação"],
         horizontal=True
     )
-    st.markdown("---")
+ 
 
     if opcao_exploracao == "🕸️ Grafo Interativo":
         st.header("Topologia e Grafo Interativo")
@@ -282,7 +425,7 @@ with tab_exploracao:
                 with col_g2:
                     metodo_tamanho = st.selectbox("Tamanho dos Nós (Métrica SNA):", ["Tamanho Fixo (Original)", "Grau Absoluto", "Degree Centrality", "Betweenness"])
                     st.markdown("<br>", unsafe_allow_html=True)
-                    btn_render_grafo = st.form_submit_button("Renderizar Grafo", use_container_width=True)
+                    btn_render_grafo = st.form_submit_button("Renderizar Grafo", width='stretch')
 
             if btn_render_grafo:
                 with st.spinner("A construir a rede topológica visual..."):
@@ -306,11 +449,11 @@ with tab_exploracao:
                 
                 if G_para_exportar:
                     data_gexf, nome_gexf = preparar_exportacao_grafo(G_para_exportar, "GEXF (Gephi)")
-                    col_ex1.download_button("📂 Exportar para Gephi", data=data_gexf, file_name=nome_gexf, use_container_width=True)
+                    col_ex1.download_button("📂 Exportar para Gephi", data=data_gexf, file_name=nome_gexf, width='stretch')
                     data_ml, nome_ml = preparar_exportacao_grafo(G_para_exportar, "GraphML")
-                    col_ex2.download_button("💾 Exportar GraphML", data=data_ml, file_name=nome_ml, use_container_width=True)
+                    col_ex2.download_button("💾 Exportar GraphML", data=data_ml, file_name=nome_ml, width='stretch')
                     data_json, nome_json = preparar_exportacao_grafo(G_para_exportar, "JSON (Node-Link)")
-                    col_ex3.download_button("🌐 Exportar JSON Web", data=data_json, file_name=nome_json, use_container_width=True)
+                    col_ex3.download_button("🌐 Exportar JSON Web", data=data_json, file_name=nome_json, width='stretch')
 
                 config = Config(
                     width="100%", 
@@ -382,7 +525,7 @@ with tab_exploracao:
             if 'Betweenness' in df_exibicao.columns: df_exibicao['Betweenness'] = df_exibicao['Betweenness'].apply(lambda x: f"{x:.4f}")
             if 'Closeness' in df_exibicao.columns: df_exibicao['Closeness'] = df_exibicao['Closeness'].apply(lambda x: f"{x:.4f}")
             
-            st.dataframe(df_exibicao[colunas], use_container_width=True, hide_index=True)
+            st.dataframe(df_exibicao[colunas], width='stretch', hide_index=True)
 
     elif opcao_exploracao == "📈 Evolução Histórica":
         st.header("Evolução Histórica (Temporal)")
@@ -450,7 +593,7 @@ with tab_exploracao:
 
                 if fig:
                     fig.update_layout(xaxis_title="Ano", yaxis_title="Frequência", template="plotly_dark", hovermode="x unified", xaxis=dict(tickmode='linear', dtick=1))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
     elif opcao_exploracao == "☁️ Lexicometria":
         st.header("Lexicometria e Nuvem de Palavras")
@@ -558,67 +701,59 @@ with tab_exploracao:
 
 
 # =========================================================================
-# ABAS DE ANÁLISE AVANÇADA (Abas 2 a 6)
+# ABAS DE ANÁLISE AVANÇADA (Abas 2 e 3)
 # =========================================================================
 
-with tab_burst:
-    st.markdown("### Deteção de Explosões (Emergências)")
-    with st.form("f_burst"):
-        c1, c2, c3 = st.columns(3)
-        min_f = c1.number_input("Freq. Mínima (Filtro Ruído):", 2, 50, 5)
-        z_s = c2.slider("Sensibilidade (Z-Score):", 1.0, 3.0, 1.5)
-        btn_b = st.form_submit_button("Analisar")
-    if btn_b:
-        df_b = detetar_explosoes(df_geral, min_f, z_s)
-        if not df_b.empty and df_b['Em_Explosao'].any():
-            st.plotly_chart(px.scatter(df_b[df_b['Em_Explosao']], x="Ano", y="palavras_chave", size="Frequencia", color="palavras_chave", template="plotly_dark", title="Rupturas Epistemológicas"))
-        else: st.info("Sem explosões detetadas com os parâmetros atuais.")
+with tab_fluxos:
+    st.markdown("### Fluxos de Conhecimento e Estruturas (Burt + Sankey)")
 
-with tab_genealogia:
-    st.markdown("### DNA Académico (Linhagens)")
-    todos_ori = sorted(list(set([d.get('orientador') for d in dados_gerais if d.get('orientador')])))
-    ori_foco = st.multiselect("Filtrar Dinastia (Patriarcas/Matriarcas):", todos_ori)
-    if st.button("Mapear Árvore de Descendência", type="primary"):
-        p, n, e = gerar_grafo_genealogico(dados_gerais, ori_foco)
-        st.write(f"**Tamanho da Dinastia:** {n} membros conectados através de {e} vínculos de orientação.")
-        with open(p, 'r', encoding='utf-8') as f: components.html(f.read(), height=700)
-
-with tab_furos:
-    st.markdown("### Métrica de Burt (Brokers vs Bolhas)")
+    st.markdown("#### 🕳️ Furos Estruturais (Burt)")
     df_bt = calcular_burt(dados_gerais)
     if not df_bt.empty:
-        st.plotly_chart(px.scatter(df_bt, x="Diversidade", y="Restrição (Constraint)", size="Intermediação (Betweenness)", hover_name="Orientador", color="Restrição (Constraint)", color_continuous_scale="RdYlGn_r", template="plotly_dark", title="Mapa de Furos Estruturais"))
-    else: st.warning("Dados insuficientes para calcular a métrica de restrição.")
+        st.plotly_chart(
+            px.scatter(
+                df_bt,
+                x="Diversidade",
+                y="Restrição (Constraint)",
+                size="Intermediação (Betweenness)",
+                hover_name="Orientador",
+                color="Restrição (Constraint)",
+                color_continuous_scale="RdYlGn_r",
+                template="plotly_dark",
+                title="Mapa de Furos Estruturais"
+            ),
+            width='stretch'
+        )
+    else:
+        st.warning("Dados insuficientes para calcular a métrica de restrição.")
 
-# --- Conteúdo da Aba 4 no arquivo 1_Avançado.py ---
-with tab_sankey:
-    st.markdown("### Fluxos de Conhecimento e Evolução de Temas (Sankey)")
+    st.markdown("---")
+    st.markdown("#### 🌊 Sankey Temporal de Palavras-chave")
     st.caption("Analise a persistência e o fluxo de tópicos de pesquisa entre três períodos de anos selecionáveis.")
 
     # 1. Recupera o intervalo de anos real da base de dados para definir os limites dos seletores
     df_geral_base = pd.DataFrame(dados_gerais)
     df_geral_base['Ano'] = pd.to_numeric(df_geral_base['ano'], errors='coerce')
-    min_ano = df_geral_base['Ano'].min() if not df_geral_base.empty else 2000
-    max_ano = df_geral_base['Ano'].max() if not df_geral_base.empty else 2026
+    min_ano = int(df_geral_base['Ano'].min()) if not df_geral_base.empty else 2000
+    max_ano = int(df_geral_base['Ano'].max()) if not df_geral_base.empty else 2026
 
     # 2. Cria seletores de data para 3 períodos com valores padrão inteligentes (dividindo o intervalo real por 3)
-    d1_start = datetime.date(min_ano, 1, 1)
-    d3_end = datetime.date(max_ano, 12, 31)
-    
-    # Cálculo para dividir o tempo total em 3 partes iguais para o valor padrão
-    total_days = (d3_end - d1_start).days
-    part_days = max(total_days // 3, 1) # ssegura mínimo de 1 dia
+    total_years = max_ano - min_ano
+    part_years = max(total_years // 3, 1) # Assegura mínimo de 1 ano
 
     st.markdown("#### 🔍 Defina os Períodos e Parâmetros")
     
     # Layout de 3 colunas para os seletores de período
     cf_p1, cf_p2, cf_p3 = st.columns(3)
     with cf_p1:
-        p1_range = st.date_input("Período 1:", value=(d1_start, d1_start + datetime.timedelta(days=part_days)), min_value=d1_start, max_value=d3_end, help="Selecione a data de início e fim.")
+        p1_anios = st.slider("Período 1 (Anos):", min_value=min_ano, max_value=max_ano, value=(min_ano, min(min_ano + part_years, max_ano)), step=1)
+        p1_range = (datetime.date(p1_anios[0], 1, 1), datetime.date(p1_anios[1], 12, 31))
     with cf_p2:
-        p2_range = st.date_input("Período 2:", value=(d1_start + datetime.timedelta(days=part_days), d1_start + datetime.timedelta(days=2*part_days)), min_value=d1_start, max_value=d3_end, help="Selecione a data de início e fim.")
+        p2_anios = st.slider("Período 2 (Anos):", min_value=min_ano, max_value=max_ano, value=(min(min_ano + part_years, max_ano), min(min_ano + 2*part_years, max_ano)), step=1)
+        p2_range = (datetime.date(p2_anios[0], 1, 1), datetime.date(p2_anios[1], 12, 31))
     with cf_p3:
-        p3_range = st.date_input("Período 3:", value=(d1_start + datetime.timedelta(days=2*part_days), d3_end), min_value=d1_start, max_value=d3_end, help="Selecione a data de início e fim.")
+        p3_anios = st.slider("Período 3 (Anos):", min_value=min_ano, max_value=max_ano, value=(min(min_ano + 2*part_years, max_ano), max_ano), step=1)
+        p3_range = (datetime.date(p3_anios[0], 1, 1), datetime.date(p3_anios[1], 12, 31))
 
     # Slider para controlar o volume de palavras por período
     n_kw = st.slider("Qtd Palavras-chave Principais por Período:", 3, 20, 10, 1)
@@ -648,11 +783,71 @@ with tab_sankey:
             # Atualiza o layout com o tema dinâmico do Streamlit
             fig.update_layout(template="streamlit", height=700) # O template "streamlit" é a chave para o Light Mode funcionar
 
-            st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+            st.plotly_chart(fig, width='stretch', theme="streamlit")
         else:
             st.warning("Não foi possível detectar fluxos de palavras-chave comuns entre os períodos selecionados. Tente períodos maiores.")
     else:
         st.warning("Por favor, selecione um intervalo de datas (início e fim) para os três períodos.")
+
+    st.markdown("---")
+    st.markdown("#### 📦 Boxplot de Quociente Locacional (QL)")
+    st.caption("Selecione o tipo de entidade no eixo X e até 5 elementos para comparar a distribuição de QL por nível acadêmico.")
+
+    tipo_map = {
+        "Orientador": "Orientador",
+        "Coorientador": "Co-orientador",
+        "Palavra-chave": "Palavra-chave",
+        "Macrotema": "Macrotema",
+    }
+    tipo_x = st.selectbox("Tipo no eixo X:", list(tipo_map.keys()), index=0)
+
+    tipo_backend = tipo_map[tipo_x]
+    entidades_unicas = set()
+    for d in dados_gerais:
+        if tipo_backend == "Orientador":
+            if d.get("orientador"):
+                entidades_unicas.add(d.get("orientador"))
+        elif tipo_backend == "Co-orientador":
+            for co in d.get("co_orientadores", []):
+                if co:
+                    entidades_unicas.add(co)
+        elif tipo_backend == "Palavra-chave":
+            for pk in d.get("palavras_chave", []):
+                if pk:
+                    entidades_unicas.add(pk)
+        else:
+            entidades_unicas.add(d.get("macrotema", "Multidisciplinar / Transversal"))
+
+    entidades_sel = st.multiselect(
+        "Elementos no eixo X (até 5):",
+        options=sorted(list(entidades_unicas)),
+        default=sorted(list(entidades_unicas))[:3],
+        max_selections=5
+    )
+
+    if entidades_sel:
+        df_box_ql = gerar_base_boxplot_ql(dados_gerais, tipo_backend, entidades_sel)
+        if df_box_ql.empty:
+            st.info("Sem dados suficientes para gerar boxplot de QL com os elementos selecionados.")
+        else:
+            fig_box = px.box(
+                df_box_ql,
+                x="Entidade",
+                y="Valor QL",
+                color="Entidade",
+                points="all",
+                hover_data=["Nível"],
+                template="plotly_dark",
+                title=f"Distribuição de QL por Nível - {tipo_x}"
+            )
+            fig_box.update_layout(
+                xaxis_title=tipo_x,
+                yaxis_title="Valor QL",
+                showlegend=False
+            )
+            st.plotly_chart(fig_box, width='stretch')
+    else:
+        st.info("Selecione pelo menos um elemento para gerar o boxplot de QL.")
 
 with tab_memes:
     st.markdown("### A Genética das Ideias")
@@ -679,7 +874,7 @@ with tab_memes:
             help="Pequenos lotes evitam que o limite da API gratuita estoure.",
             key="lote_ia_memetica" 
         )
-        btn_iniciar_ia = st.button("🚀 Processar Próximo Lote", type="primary", use_container_width=True)
+        btn_iniciar_ia = st.button("🚀 Processar Próximo Lote", type="primary", width='stretch')
         
     if btn_iniciar_ia:
         if qtd_com_ontologia >= qtd_total_validos:
@@ -735,7 +930,7 @@ with tab_memes:
         df_onto = pd.DataFrame(dados_ontologia)
         
         # Mostra a tabela de forma amigável
-        st.dataframe(df_onto, use_container_width=True, hide_index=True, height=250)
+        st.dataframe(df_onto, width='stretch', hide_index=True, height=250)
         
         # Cria e injeta o botão de download do CSV
         csv_onto = df_onto.to_csv(index=False).encode('utf-8')
@@ -744,7 +939,7 @@ with tab_memes:
             data=csv_onto,
             file_name="catalogo_ontologico_ia.csv",
             mime="text/csv",
-            use_container_width=True,
+            width='stretch',
             key="btn_export_onto"
         )
     else:
@@ -803,15 +998,15 @@ with tab_memes:
                 legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
                 margin=dict(t=20, b=20, l=20, r=20)
             )
-            st.plotly_chart(fig_mortalidade, use_container_width=True, theme="streamlit")
+            st.plotly_chart(fig_mortalidade, width='stretch', theme="streamlit")
             
             with st.expander("👁️ Ver Catálogo Completo", expanded=False):
                 st.write("**🟢 Memes Sobreviventes (Top Fecundidade)**")
-                st.dataframe(df_vivos, use_container_width=True, hide_index=True, height=250)
+                st.dataframe(df_vivos, width='stretch', hide_index=True, height=250)
                 
                 st.write("**🔴 Memes Mortos (Cemitério de Ideias)**")
                 amostra_mortos = df_mortos.sample(min(100, len(df_mortos))) if len(df_mortos) > 0 else df_mortos
-                st.dataframe(amostra_mortos, use_container_width=True, hide_index=True, height=250)
+                st.dataframe(amostra_mortos, width='stretch', hide_index=True, height=250)
             
         with col2:
             st.markdown("#### Os Super-Memes (Maior Fecundidade)")
@@ -835,7 +1030,7 @@ with tab_memes:
                 yaxis_title="",
                 coloraxis_showscale=False
             )
-            st.plotly_chart(fig_fecundidade, use_container_width=True, theme="streamlit")
+            st.plotly_chart(fig_fecundidade, width='stretch', theme="streamlit")
 
         st.markdown("---")
         st.markdown("#### Tempo de Meia-Vida do Conhecimento (Longevidade)")
@@ -864,7 +1059,7 @@ with tab_memes:
             )
             # Atualizado para "streamlit" para suportar Light/Dark mode
             fig_longevidade.update_layout(template="streamlit", height=500)
-            st.plotly_chart(fig_longevidade, use_container_width=True, theme="streamlit")
+            st.plotly_chart(fig_longevidade, width='stretch', theme="streamlit")
         else:
             st.info("Nenhum meme encontrado com essa taxa de replicação mínima.")
         
@@ -959,7 +1154,7 @@ with tab_memes:
                 if col in df_nos_exibicao.columns:
                     df_nos_exibicao[col] = df_nos_exibicao[col].apply(lambda x: f"{x:.4f}")
             
-            st.dataframe(df_nos_exibicao, use_container_width=True, hide_index=True)
+            st.dataframe(df_nos_exibicao, width='stretch', hide_index=True)
 
         else:
             st.info("Não há conexões suficientes neste conjunto de dados.")

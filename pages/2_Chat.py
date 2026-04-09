@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 with st.sidebar:
-    st.image("ecograd - logo.png", use_container_width=True)
+    st.image("ecograd - logo.png", width='stretch')
     st.markdown("---")
     st.markdown("### 🎓 Sobre o EcoGrad")
     st.markdown("O **EcoGrad** é uma plataforma analítica que mapeia e visualiza as redes de produção acadêmica da Pós-Graduação (Teses e Dissertações) e Graduação (TCCs).")

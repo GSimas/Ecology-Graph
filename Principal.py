@@ -7,13 +7,25 @@ import pandas as pd
 import plotly.express as px
 import re
 import unicodedata
+import difflib
+import hashlib as _hashlib
 from collections import Counter, defaultdict
 from streamlit_agraph import Node, Edge
 import time
 
+
+def _chave_widget(prefixo: str, texto: str, indice: int = 0) -> str:
+    """
+    Gera chave determinística e segura para widgets Streamlit.
+    Usa MD5 (não criptográfico, apenas para unicidade de chave).
+    Inclui índice para evitar colisão quando mesmo texto aparece N vezes.
+    """
+    digest = _hashlib.md5(f"{texto}_{indice}".encode('utf-8')).hexdigest()[:12]
+    return f"{prefixo}_{digest}"
+
 from app_config import get_gemini_api_key
 from backend import (
-    conectar_neo4j, 
+    conectar_neo4j,
     extrair_subgrafo_neo4j,
     gerar_orbita_local,
     navegar_para,
@@ -31,7 +43,9 @@ from backend import (
     carregar_catalogo_tcc_frontend,
     plotar_mapa_tematico,
     calcular_similares_rede,
-    plotar_grafico_3d_sna
+    plotar_grafico_3d_sna,
+    STOPWORDS_ACADEMICAS,
+    _normalizar_nivel,
 )
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -287,8 +301,8 @@ keywords_set = set([kw for d in dados_completos for kw in d.get('palavras_chave'
 
 c1, c2, c3 = st.columns(3)
 c1.metric("📄 Documentos Totais", len(dados_completos))
-c2.metric("🎓 Teses (Doutorado)", len([d for d in dados_completos if "Tese" in d.get('nivel_academico', '')]))
-c3.metric("📜 Dissertações", len([d for d in dados_completos if "Disserta" in d.get('nivel_academico', '')]))
+c2.metric("🎓 Teses (Doutorado)", len([d for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Teses']))
+c3.metric("📜 Dissertações", len([d for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações']))
 
 c4, c5, c6, c7 = st.columns(4)
 c4.metric("✍️ Autores Únicos", len(autores_set))
@@ -298,6 +312,8 @@ c7.metric("💡 Conceitos (Keywords)", len(keywords_set))
 
 
 # --- APRESENTAÇÃO DO PERFIL DINÂMICO ---
+nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
+
 if api_key_app:
     # Extrai até 25 documentos espaçados uniformemente para criar uma amostra representativa
     amostra_docs = []
@@ -306,8 +322,6 @@ if api_key_app:
         d = dados_completos[i]
         amostra_docs.append(f"- {d.get('titulo', '')} | {', '.join(d.get('palavras_chave', []))}")
         if len(amostra_docs) >= 25: break
-            
-    nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
 else:
     st.warning("🔑 Chave da API do Gemini não configurada em variáveis de ambiente ou secrets. O perfil dinâmico está desativado.")
 st.markdown("<br>", unsafe_allow_html=True)
@@ -319,8 +333,7 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
     st.subheader("📊 Comparativo entre PPGs")
     
     comparativo_data = []
-    
-    from collections import defaultdict
+
     dados_por_ppg = defaultdict(list)
     for d in dados_completos:
         ppg = d.get('programa_origem', 'Desconhecido')
@@ -330,8 +343,8 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
         comparativo_data.append({
             "PPG": ppg,
             "📄 Documentos Totais": len(docs_ppg),
-            "🎓 Teses (Doutorado)": len([d for d in docs_ppg if "Tese" in d.get('nivel_academico', '')]),
-            "📜 Dissertações": len([d for d in docs_ppg if "Disserta" in d.get('nivel_academico', '')]),
+            "🎓 Teses (Doutorado)": len([d for d in docs_ppg if _normalizar_nivel(d.get('nivel_academico')) == 'Teses']),
+            "📜 Dissertações": len([d for d in docs_ppg if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações']),
             "✍️ Autores Únicos": len(set([a for d in docs_ppg for a in d.get('autores', [])])),
             "🏫 Orientadores": len(set([d.get('orientador') for d in docs_ppg if d.get('orientador')])),
             "🤝 Co-orientadores": len(set([co for d in docs_ppg for co in d.get('co_orientadores', [])])),
@@ -348,7 +361,7 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
         color="PPG", 
         facet_col="Métrica", 
         facet_col_wrap=4, 
-        template="plotly_dark", 
+        template="streamlit", 
         text="Quantidade",
         height=650
     )
@@ -363,8 +376,6 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
 # --- APRESENTAÇÃO DO PERFIL E DADOS OFICIAIS ---
 st.markdown("#### 🏛️ Ficha Técnica e Perfil Institucional")
 
-nomes_ppgs = list(set([d.get('programa_origem', 'Programa Desconhecido') for d in dados_completos if d.get('programa_origem')]))
-
 # Puxa o dicionário completo da CAPES da memória (Instantâneo)
 catalogo_capes = carregar_catalogo_capes_ufsc()
 
@@ -378,8 +389,6 @@ for nome_ppg in nomes_ppgs:
     
     # 3. Inteligência de Strings (Fuzzy Matching) para lidar com variações da UFSC/CAPES
     if not dados_capes:
-        import difflib # Biblioteca nativa do Python para cálculo de similaridade
-        
         chaves_disponiveis = list(catalogo_capes.keys())
         # Procura a chave mais parecida com pelo menos 65% de similaridade estrutural
         melhores_matches = difflib.get_close_matches(nome_norm_busca, chaves_disponiveis, n=1, cutoff=0.65)
@@ -418,13 +427,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # 4. Descritivo Dinâmico da IA (A Alma do Programa)
 if api_key_app:
-    amostra_docs = []
-    salto = max(1, len(dados_completos) // 25)
-    for i in range(0, len(dados_completos), salto):
-        d = dados_completos[i]
-        amostra_docs.append(f"- {d.get('titulo', '')} | {', '.join(d.get('palavras_chave', []))}")
-        if len(amostra_docs) >= 25: break
-            
     with st.spinner("A IA está analisando a amostra de documentos para sintetizar o perfil epistemológico..."):
         descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
         st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
@@ -515,20 +517,20 @@ with tab_dest0:
     c1_0, c2_0 = st.columns(2)
     with c1_0:
         fig_ori = px.bar(df_ori, y='Orientador', x='Orientações', orientation='h', title='Top 10 Orientadores', text='Orientações')
-        fig_ori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_ori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_ori, width='stretch')
 
         fig_coori = px.bar(df_coori, y='Coorientador', x='Coorientações', orientation='h', title='Top 10 Coorientadores', text='Coorientações')
-        fig_coori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_coori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_coori, width='stretch')
 
     with c2_0:
         fig_kw = px.bar(df_kw, y='Palavra-chave', x='Ocorrências', orientation='h', title='Top 10 Palavras-chave', text='Ocorrências')
-        fig_kw.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_kw.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_kw, width='stretch')
 
         fig_mt = px.bar(df_mt, y='Macrotema', x='Documentos', orientation='h', title='Top 10 Macrotemas', text='Documentos')
-        fig_mt.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_mt.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_mt, width='stretch')
 
 with tab_dest1:
@@ -732,9 +734,9 @@ if termo_ativo:
             if orientadores or co_orientadores:
                 st.write("**👨‍🏫 Orientadores e Co-orientadores:**")
                 for ori in sorted(list(orientadores)):
-                    st.button(f"🏫 Orientador: {ori}", key=f"btn_ori_aut_{abs(hash(ori))}", on_click=navegar_para, args=("Orientador", ori))
+                    st.button(f"🏫 Orientador: {ori}", key=_chave_widget("btn_ori_aut", ori), on_click=navegar_para, args=("Orientador", ori))
                 for co in sorted(list(co_orientadores)):
-                    st.button(f"🤝 Co-orientador: {co}", key=f"btn_co_aut_{abs(hash(co))}", on_click=navegar_para, args=("Co-orientador", co))
+                    st.button(f"🤝 Co-orientador: {co}", key=_chave_widget("btn_co_aut", co), on_click=navegar_para, args=("Co-orientador", co))
                 
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -830,7 +832,7 @@ if termo_ativo:
                     for i, aluno in enumerate(alunos_professores):
                          # Roteamento inteligente: manda pro perfil de Orientador ou Co-orientador dependendo de onde ele atua
                          tipo_nav = "Orientador" if aluno in orientadores_set else "Co-orientador"
-                         chave_nav = f"btn_descendente_{abs(hash(aluno))}_{i}"
+                         chave_nav = _chave_widget("btn_descendente", aluno, i)
                          st.button(f"🎓 {aluno} (Ver Perfil Acadêmico)", key=chave_nav, on_click=navegar_para, args=(tipo_nav, aluno))
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -853,14 +855,13 @@ if termo_ativo:
             with st.expander(f"Ver lista de todos os {len(alunos_orientados)} alunos"):
                 for i, aluno in enumerate(alunos_orientados):
                     icone_aluno = "🎓🔁" if aluno in alunos_duplos else "👤"
-                    st.button(f"{icone_aluno} {aluno}", key=f"btn_aluno_{tipo_busca}_{abs(hash(aluno))}_{i}", on_click=navegar_para, args=("Autor", aluno))
+                    st.button(f"{icone_aluno} {aluno}", key=_chave_widget(f"btn_aluno_{tipo_busca}", aluno, i), on_click=navegar_para, args=("Autor", aluno))
 
             st.markdown("<br>", unsafe_allow_html=True)
             
             # --- 4. LISTA DE DOCUMENTOS ---
             st.write(f"**Documentos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(docs)}):**")
-            
-            from collections import defaultdict
+
             docs_por_mt = defaultdict(list)
             for d in docs:
                 docs_por_mt[d.get('macrotema', 'Multidisciplinar / Transversal')].append(d)
@@ -869,7 +870,7 @@ if termo_ativo:
                 for mt, docs_mt in docs_por_mt.items():
                     st.markdown(f"**🏷️ {mt}**")
                     for i, d in enumerate(docs_mt):
-                        chave_unica = f"btn_{tipo_busca}_{abs(hash(d['titulo']))}_{i}"
+                        chave_unica = _chave_widget(f"btn_{tipo_busca}", d['titulo'], i)
                         st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
                         
         elif tipo_busca == "Palavra-chave":
@@ -883,7 +884,7 @@ if termo_ativo:
             
             with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    chave_unica = f"btn_pk_{abs(hash(d['titulo']))}_{i}"
+                    chave_unica = _chave_widget("btn_pk", d['titulo'], i)
                     st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Macrotema":
@@ -892,7 +893,7 @@ if termo_ativo:
             
             with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    chave_unica = f"btn_mt_{abs(hash(d['titulo']))}_{i}"
+                    chave_unica = _chave_widget("btn_mt", d['titulo'], i)
                     st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
                     
     with col_sna:
@@ -989,9 +990,9 @@ if termo_ativo:
                             df_plot['Volume'] = df_plot['Volume'].cumsum()
 
                     if color_col:
-                        fig = graf_func(df_plot, x='ano', y='Volume', color=color_col, title=title_fig, template="plotly_dark", **barmode_kw, **marker_kw, **facet_kws)
+                        fig = graf_func(df_plot, x='ano', y='Volume', color=color_col, title=title_fig, template="streamlit", **barmode_kw, **marker_kw, **facet_kws)
                     else:
-                        fig = graf_func(df_plot, x='ano', y='Volume', title=title_fig, template="plotly_dark", **marker_kw, **facet_kws)
+                        fig = graf_func(df_plot, x='ano', y='Volume', title=title_fig, template="streamlit", **marker_kw, **facet_kws)
                     
                     fig.update_layout(xaxis_title="Ano", yaxis_title="Quantidade", xaxis=dict(tickmode='linear', dtick=1))
                     if separar_ppg_hist: fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
@@ -1010,7 +1011,7 @@ if termo_ativo:
             if tem_multiplos_ppgs:
                 separar_nuvem_ppg = col_nuvem2.radio("Separar Nuvem por PPG:", ["Não", "Sim"], horizontal=True, key="sep_nuvem_ppg_perfil") == "Sim"
 
-            stopwords = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'by'])
+            stopwords = STOPWORDS_ACADEMICAS
             
             def extrair_texto_docs(lista_docs):
                 texto_completo = []
@@ -1167,7 +1168,7 @@ if termo_ativo:
             with st.expander(f"Navegar para os perfis ({titulo_coluna_item})"):
                 for idx, row in df.iterrows():
                     item_nome = row[titulo_coluna_item]
-                    st.button(f"Ir para: {item_nome}", key=f"btn_sim_{tipo_nav}_{hash(item_nome)}_{idx}", on_click=navegar_para, args=(tipo_nav, item_nome))
+                    st.button(f"Ir para: {item_nome}", key=_chave_widget(f"btn_sim_{tipo_nav}", item_nome, idx), on_click=navegar_para, args=(tipo_nav, item_nome))
 
         if not similares or all(len(v) == 0 for v in similares.values()):
             st.warning("Este item possui conexões muito isoladas do resto do programa para que vizinhos próximos sejam calculados com precisão.")

@@ -28,6 +28,54 @@ import scipy.stats as sps
 from app_config import get_gemini_api_key, get_neo4j_credentials
 from gemini_utils import DEFAULT_FAST_MODELS, DEFAULT_TEXT_MODELS, generate_content, response_text
 
+def _estimar_gamma_lei_potencia(degrees: list) -> float:
+    """
+    Estimador MLE (máxima verossimilhança) do expoente γ da lei de potência.
+    Robusto a redes degeneradas (graus iguais, nós isolados, amostra pequena).
+    Retorna 0.0 em vez de lançar exceção para qualquer caso edge.
+
+    Fórmula: γ = 1 + n / Σ ln(xi / x_min)
+    Referência: Clauset, Shalizi & Newman (2009), SIAM Review.
+    """
+    degrees_validos = [d for d in degrees if isinstance(d, (int, float)) and d > 0]
+
+    if len(degrees_validos) < 10:
+        return 0.0  # amostra insuficiente para estimativa confiável
+
+    d_min = min(degrees_validos)
+    if d_min < 1:
+        return 0.0  # graus devem ser ≥ 1 para log ser definido
+
+    try:
+        log_sum = sum(math.log(d / d_min) for d in degrees_validos)
+        if log_sum <= 0:
+            return 0.0  # rede degenerada: todos os graus iguais → log_sum = 0
+        return 1.0 + len(degrees_validos) / log_sum
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return 0.0
+
+
+# --- CONSTANTE GLOBAL: Stopwords para análise lexical ---
+# Unificado para PT e EN. Inclui termos acadêmicos genéricos que poluem nuvens e redes.
+STOPWORDS_ACADEMICAS: frozenset = frozenset({
+    # Português — conectivos e artigos
+    'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com',
+    'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas',
+    'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo',
+    'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me',
+    'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta',
+    'sob', 'perspectiva', 'frente', 'partir', 'baseado',
+    # Português — termos acadêmicos genéricos
+    'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento',
+    'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia',
+    'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram',
+    'são', 'ser', 'através', 'forma', 'apresenta',
+    # Inglês — conectivos
+    'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an',
+    'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has',
+    'have', 'was', 'were', 'not', 'but',
+})
+
 
 @st.cache_data(show_spinner=False)
 def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_memes="Artefatos Extraídos"):
@@ -41,7 +89,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     import unicodedata
     
     # Stopwords para limpar os títulos no método Tradicional
-    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+    stopwords = STOPWORDS_ACADEMICAS
 
     def remover_acentos(texto):
         if not isinstance(texto, str): return ""
@@ -116,7 +164,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     # 3. MÉTRICAS TOTAIS (Cards)
     degrees = list(grau_abs_full.values())
     try: pr = nx.pagerank(G_completo, weight='weight')
-    except: pr = {n:0 for n in G_completo.nodes()}
+    except Exception: pr = {n: 0 for n in G_completo.nodes()}
     
     net_metrics = {
         'densidade': nx.density(G_completo),
@@ -166,7 +214,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     for u, v, data in G_display.edges(data=True):
         edges.append(Edge(source=u, target=v, value=data['weight'], color=cor_dinamica_aresta))
         
-    gamma = 1 + len(degrees) / sum(np.log(d / min(degrees)) for d in degrees) if min(degrees) > 0 else 0
+    gamma = _estimar_gamma_lei_potencia(degrees)
     spearman, _ = sps.spearmanr(list(deg_cent_full.values()), list(bet_cent_full.values()))
     
     net_maturity = {
@@ -182,6 +230,35 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
 def configurar_gemini():
     """Confere se há chave disponível via env ou Streamlit secrets."""
     return bool(get_gemini_api_key())
+
+
+def _chamar_gemini_com_retry(prompt: str, model_candidates, temperature: float,
+                              response_mime_type: str,
+                              max_tentativas: int = 3,
+                              delay_base: float = 2.0):
+    """
+    Wrapper com backoff exponencial para chamadas à API do Gemini.
+    Tentativa 1: imediata
+    Tentativa 2: aguarda delay_base segundos (2s por padrão)
+    Tentativa 3: aguarda delay_base * 2 segundos (4s por padrão)
+    Lança a última exceção se todas as tentativas falharem.
+    """
+    ultima_excecao = None
+    for tentativa in range(max_tentativas):
+        try:
+            return generate_content(
+                prompt=prompt,
+                model_candidates=model_candidates,
+                temperature=temperature,
+                response_mime_type=response_mime_type,
+            )
+        except Exception as e:
+            ultima_excecao = e
+            if tentativa < max_tentativas - 1:
+                espera = delay_base * (2 ** tentativa)
+                time.sleep(espera)
+    raise ultima_excecao
+
 
 def extrair_artefatos_llm(titulo, resumo):
     """Envia um prompt estruturado ao Gemini forçando um retorno em JSON."""
@@ -210,7 +287,7 @@ def extrair_artefatos_llm(titulo, resumo):
     """
     
     try:
-        response = generate_content(
+        response = _chamar_gemini_com_retry(
             prompt=prompt,
             model_candidates=DEFAULT_FAST_MODELS,
             temperature=0.2,
@@ -433,7 +510,7 @@ def calcular_metricas_memeticas(df_base, fonte_memes="Palavras-chave"):
     if df_base.empty: 
         return pd.DataFrame(), pd.DataFrame(), 0, 0, pd.DataFrame(), pd.DataFrame()
 
-    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+    stopwords = STOPWORDS_ACADEMICAS
 
     def remover_acentos(texto):
         if not isinstance(texto, str): return ""
@@ -863,7 +940,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
     # 1. Assortatividade (Quem se conecta com quem?)
     try:
         assortatividade = nx.degree_assortativity_coefficient(G)
-    except:
+    except Exception:
         assortatividade = 0.0
 
     # 2. Rich-Club Coefficient (Os Hubs se conversam?)
@@ -871,10 +948,10 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
         rc = nx.rich_club_coefficient(G, normalized=False)
         # Pega a probabilidade de conexão apenas para o "Clube" dos top 20% maiores nós
         k_max = max(rc.keys()) if rc else 1
-        k_target = int(k_max * 0.8) 
+        k_target = int(k_max * 0.8)
         chaves_validas = [k for k in rc.keys() if k >= k_target]
         rich_club_val = rc[chaves_validas[0]] if chaves_validas else list(rc.values())[-1]
-    except:
+    except Exception:
         rich_club_val = 0.0
 
     # 3. Expoente Gamma da Lei de Potência (O grau de monopolização)
@@ -883,18 +960,18 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
         contagem = Counter(graus)
         k = np.array(list(contagem.keys()))
         Pk = np.array(list(contagem.values())) / len(graus)
-        
+
         # Filtra k > 1 para focar na "cauda longa" da distribuição (onde a magia acontece)
         mask = k > 1
         log_k = np.log10(k[mask])
         log_Pk = np.log10(Pk[mask])
-        
+
         if len(log_k) > 1:
             slope, _, _, _, _ = stats.linregress(log_k, log_Pk)
             gamma = abs(slope)
         else:
             gamma = 0.0
-    except:
+    except Exception:
         gamma = 0.0
 
     # 4. Correlação de Spearman (A barriga da curva 3D: Brokers vs Hubs)
@@ -903,7 +980,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
         graus_list = [v.get('Grau Absoluto', 0) for v in _sna_global.values()]
         bet_list = [v.get('Betweenness', 0) for v in _sna_global.values()]
         spearman_rho, _ = stats.spearmanr(graus_list, bet_list)
-    except:
+    except Exception:
         spearman_rho = 0.0
 
     return {
@@ -969,66 +1046,77 @@ def plotar_grafico_3d_sna(sna_global, tipo_alvo, termo_destaque=None):
     )
     return fig
 
-@st.cache_data
-def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
-    """Calcula os nós mais próximos usando o Índice de Jaccard (Similaridade de Vizinhança)."""
-    
+@st.cache_data(show_spinner=False)
+def construir_perfis_similaridade(dados_lista):
+    """
+    Pré-computa o 'DNA acadêmico' de todas as entidades para comparação Jaccard.
+    Separado de calcular_similares_rede para ser cacheado independentemente.
+    Cache hit nas chamadas subsequentes — O(1) em vez de O(n) por busca.
+    """
     perfis = {}
     tipos = {}
     niveis_docs = {}
-    
+
     def add_feature(entidade, feature, tipo_entidade):
-        if entidade not in perfis: 
+        if entidade not in perfis:
             perfis[entidade] = set()
             tipos[entidade] = tipo_entidade
         perfis[entidade].add(feature)
-        
-    # 1. Constrói o "DNA" (Perfil de Conexões) de cada entidade
-    for d in dados_completos:
+
+    for d in dados_lista:
         doc = d.get('titulo')
         if not doc: continue
-        
+
         niveis_docs[doc] = d.get('nivel_academico', 'Outros')
-        
+
         autores = d.get('autores', [])
         ori = d.get('orientador')
         cooris = d.get('co_orientadores', [])
         pks = d.get('palavras_chave', [])
         mt = d.get('macrotema')
-        
+
         todas_entidades_doc = autores + ([ori] if ori else []) + cooris + pks + ([mt] if mt else [])
-        
+
         # DNA do Documento: Todas as pessoas e conceitos atrelados a ele
         for ent in todas_entidades_doc:
             if ent: add_feature(doc, ent, 'Documento')
-            
+
         # DNA do Autor: Seus orientadores, palavras-chave e temas que costuma escrever
         for a in autores:
             if ori: add_feature(a, ori, 'Autor')
             for pk in pks: add_feature(a, pk, 'Autor')
             if mt: add_feature(a, mt, 'Autor')
-            
+
         # DNA dos Professores: Seus parceiros de banca, palavras-chave e temas dos alunos
         if ori:
             for pk in pks: add_feature(ori, pk, 'Orientador')
             if mt: add_feature(ori, mt, 'Orientador')
             for co in cooris: add_feature(ori, co, 'Orientador')
-            
+
         for co in cooris:
             for pk in pks: add_feature(co, pk, 'Co-orientador')
             if mt: add_feature(co, mt, 'Co-orientador')
             if ori: add_feature(co, ori, 'Co-orientador')
-            
+
         # DNA dos Conceitos: Outras palavras usadas juntas, macrotema e orientadores
         for pk in pks:
             if mt: add_feature(pk, mt, 'Palavra-chave')
-            for pk2 in pks: 
+            for pk2 in pks:
                 if pk != pk2: add_feature(pk, pk2, 'Palavra-chave')
-                
+
         # DNA do Macrotema: Suas palavras-chave base e orientadores principais
         if mt:
             for pk in pks: add_feature(mt, pk, 'Macrotema')
             if ori: add_feature(mt, ori, 'Macrotema')
+
+    return perfis, tipos, niveis_docs
+
+
+@st.cache_data
+def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
+    """Calcula os nós mais próximos usando o Índice de Jaccard (Similaridade de Vizinhança)."""
+
+    perfis, tipos, niveis_docs = construir_perfis_similaridade(dados_completos)
 
     if termo_foco not in perfis:
         return {}
@@ -1141,13 +1229,22 @@ def navegar_para(novo_tipo, novo_termo):
     st.session_state.update({'busca_tipo': novo_tipo, 'busca_termo': novo_termo})
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
-def _normalizar_nivel(nivel):
-    nivel_txt = str(nivel or "")
-    if "Tese" in nivel_txt:
-        return "Teses"
-    if "Disserta" in nivel_txt:
-        return "Dissertações"
-    return "Outros"
+def _normalizar_nivel(nivel) -> str:
+    """
+    Normaliza o campo nivel_academico para um dos 4 valores canônicos:
+    'Teses', 'Dissertações', 'TCC', 'Outros'.
+    Case-insensitive. Robusto a variações de nomenclatura.
+    """
+    if not nivel:
+        return 'Outros'
+    nivel_str = str(nivel).lower().strip()
+    if 'tese' in nivel_str or 'doutor' in nivel_str or 'thesis' in nivel_str:
+        return 'Teses'
+    if 'disserta' in nivel_str or 'mestrado' in nivel_str or 'dissertation' in nivel_str or 'master' in nivel_str:
+        return 'Dissertações'
+    if 'tcc' in nivel_str or 'conclus' in nivel_str or 'gradua' in nivel_str:
+        return 'TCC'
+    return 'Outros'
 
 def _extrair_entidades_por_tipo(doc, tipo):
     if tipo == "Orientador":
@@ -1177,7 +1274,7 @@ def _renderizar_tabela_ql(resumo_df, titulo):
             if v < 1:
                 return "color: #FF4B4B;"
             return "color: #F8E71C;"
-        except:
+        except Exception:
             return ""
 
     styler = resumo_df.style.map(color_ql, subset=["Valor QL"])
@@ -1364,8 +1461,8 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
             if v > 1: return 'color: #00FF00; font-weight: bold;'
             elif v < 1: return 'color: #FF4B4B;'
             return 'color: #F8E71C;'
-        except: return ''
-        
+        except Exception: return ''
+
     styler = resumo.style.map(color_ql, subset=['QL (Especialização)'])
     
     st.dataframe(
@@ -1445,7 +1542,7 @@ def calcular_sna_global(dados):
     barra.progress(85, text="🏘️ Detectando Clusters e Comunidades (Algoritmo de Louvain)...")
     try:
         mapa_comunidades = {node: i+1 for i, comm in enumerate(nx_comm.louvain_communities(G)) for node in comm}
-    except:
+    except Exception:
         mapa_comunidades = {}
         
     # 7. Finalização e Ranking (100%)
@@ -1469,51 +1566,79 @@ def calcular_sna_global(dados):
     return resultado
 
 @st.cache_resource
-def gerar_orbita_local(termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, dados_completos=None):
+def _construir_grafo_historico(dados_lista: tuple) -> nx.Graph:
     """
-    Motor in-memory de renderização visual (Fallback sem Neo4j para TCCs).
+    Constrói o grafo completo com metadado de ano em cada aresta.
+    Cacheada separadamente de gerar_orbita_local para reutilizar entre frames de animação.
+
+    Recebe dados_lista como tuple de tuplas (para ser hashável pelo st.cache_resource).
     """
-    if not dados_completos: return [], []
-    
-    # 1. Constrói a Rede Temporária Baseada no Limite de Ano
     G = nx.Graph()
-    for d in dados_completos:
-        # Pula se o doc exceder o ano_limite
-        ano = int(d['ano']) if d.get('ano') and str(d['ano']).isdigit() else 2000
-        if ano > ano_limite:
+    for d in dados_lista:
+        titulo, ano_raw, orientador, autores, cooris, pks, macrotema = d
+        try:
+            ano = int(ano_raw) if ano_raw and str(ano_raw).isdigit() else 0
+        except (ValueError, TypeError):
+            ano = 0
+
+        if not titulo:
             continue
-            
-        doc = d.get('titulo')
-        if not doc: continue
-        
-        G.add_node(doc, tipo='Documento')
-        
-        for a in d.get('autores', []): 
-            G.add_node(a, tipo='Autor')
-            G.add_edge(doc, a)
-            
-        ori = d.get('orientador')
-        if ori: 
-            G.add_node(ori, tipo='Orientador')
-            G.add_edge(doc, ori)
-            
-        # Adicionar co-orientadores para fidelidade
-        for co in d.get('co_orientadores', []):
-            G.add_node(co, tipo='Co-orientador')
-            G.add_edge(doc, co)
-            
-        for pk in d.get('palavras_chave', []): 
-            G.add_node(pk, tipo='Conceito')
-            G.add_edge(doc, pk)
-            
-        mt = d.get('macrotema')
-        if mt:
-            G.add_node(mt, tipo='Macrotema')
-            G.add_edge(doc, mt)
-            
-    if termo_foco not in G: 
+
+        G.add_node(titulo, tipo='Documento', ano=ano)
+
+        for a in autores:
+            if a:
+                G.add_node(a, tipo='Autor')
+                G.add_edge(titulo, a, ano=ano)
+
+        if orientador:
+            G.add_node(orientador, tipo='Orientador')
+            G.add_edge(titulo, orientador, ano=ano)
+
+        for co in cooris:
+            if co:
+                G.add_node(co, tipo='Co-orientador')
+                G.add_edge(titulo, co, ano=ano)
+
+        for pk in pks:
+            if pk:
+                G.add_node(pk, tipo='Conceito')
+                G.add_edge(titulo, pk, ano=ano)
+
+        if macrotema:
+            G.add_node(macrotema, tipo='Macrotema')
+            G.add_edge(titulo, macrotema, ano=ano)
+
+    return G
+
+
+@st.cache_resource
+def gerar_orbita_local(termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, dados_completos=None):
+    """Motor in-memory de renderização visual (Fallback sem Neo4j para TCCs)."""
+    if not dados_completos: return [], []
+
+    # Constrói ou recupera do cache o grafo completo datado
+    G_completo = _construir_grafo_historico(tuple(
+        (d.get('titulo', ''), d.get('ano', 0), d.get('orientador', ''),
+         tuple(d.get('autores', [])), tuple(d.get('co_orientadores', [])),
+         tuple(d.get('palavras_chave', [])), d.get('macrotema', ''))
+        for d in dados_completos
+    ))
+
+    # Filtra o grafo pelo ano_limite de forma eficiente
+    arestas_no_periodo = [
+        (u, v) for u, v, data in G_completo.edges(data=True)
+        if data.get('ano', 0) <= ano_limite
+    ]
+
+    if not arestas_no_periodo:
         return [], []
-        
+
+    G = G_completo.edge_subgraph(arestas_no_periodo).copy()
+
+    if termo_foco not in G:
+        return [], []
+
     # 2. Extrai o Ego-Graph de acordo com a profundidade
     ego_net = nx.ego_graph(G, termo_foco, radius=profundidade)
     
@@ -1683,7 +1808,7 @@ def gerar_tabela_macrotemas_perfil(docs, dados_totais):
             if v > 1: return 'color: #00FF00; font-weight: bold;'
             elif v < 1: return 'color: #FF4B4B;'
             return 'color: #F8E71C;'
-        except: return ''
+        except Exception: return ''
         
     styler2 = resumo.style.map(color_ql2, subset=['QL (Especialização)'])
     
@@ -1799,21 +1924,69 @@ def carregar_catalogo_capes_ufsc():
     return programas_capes
 
 # --- CARREGAMENTO E SELEÇÃO DA BASE CONSOLIDADA ---
-@st.cache_data
+def _normalizar_documentos(dados: list) -> list:
+    """
+    Garante tipos consistentes em todos os documentos.
+    Chamada pelos loaders para evitar bugs de tipo downstream.
+    Modifica a lista in-place para economizar memória e retorna ela.
+    """
+    for d in dados:
+        # Ano: int quando possível, None caso contrário
+        ano_raw = d.get('ano')
+        if ano_raw is not None:
+            try:
+                d['ano'] = int(str(ano_raw).strip())
+            except (ValueError, TypeError):
+                d['ano'] = None
+
+        # Listas: garante list, nunca None
+        for campo in ('autores', 'co_orientadores', 'palavras_chave'):
+            if not isinstance(d.get(campo), list):
+                d[campo] = []
+
+        # Strings: garante string vazia em vez de None
+        for campo in ('titulo', 'orientador', 'macrotema', 'resumo',
+                      'programa_origem', 'nivel_academico', 'url'):
+            if d.get(campo) is None:
+                d[campo] = ''
+
+        # Palavras-chave: remove itens None ou string vazia
+        d['palavras_chave'] = [
+            pk for pk in d['palavras_chave']
+            if pk and str(pk).strip()
+        ]
+    return dados
+
+
+@st.cache_data(show_spinner="📚 Carregando base de teses e dissertações...", ttl=3600)
 def carregar_base_consolidada():
     try:
-        # Lê o arquivo GZIP diretamente da memória ('rt' = Read Text)
         with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
-            return json.load(f)
+            dados = json.load(f)
+        return _normalizar_documentos(dados)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError as e:
+        st.error(f"⚠️ Arquivo 'base_consolidada_ufsc.json.gz' está corrompido: {e}")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Erro inesperado ao carregar base consolidada: {e}")
+        return []
 
-@st.cache_data
+
+@st.cache_data(show_spinner="📚 Carregando base de TCCs...", ttl=3600)
 def carregar_base_tcc():
     try:
         with gzip.open('base_tcc_ufsc.json.gz', 'rt', encoding='utf-8') as f:
-            return json.load(f)
+            dados = json.load(f)
+        return _normalizar_documentos(dados)
     except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as e:
+        st.error(f"⚠️ Arquivo 'base_tcc_ufsc.json.gz' está corrompido: {e}")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Erro inesperado ao carregar base de TCCs: {e}")
         return []
 
 

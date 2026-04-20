@@ -4,9 +4,11 @@ from streamlit_agraph import agraph, Node, Edge, Config
 import networkx as nx
 import networkx.algorithms.community as nx_comm
 import pandas as pd
+import difflib
 import plotly.express as px
 import re
 import unicodedata
+import hashlib as _hashlib
 from collections import Counter, defaultdict
 from streamlit_agraph import Node, Edge
 import time
@@ -31,28 +33,61 @@ from backend import (
     carregar_catalogo_tcc_frontend,
     plotar_mapa_tematico,
     calcular_similares_rede,
-    plotar_grafico_3d_sna
+    plotar_grafico_3d_sna,
+    STOPWORDS_ACADEMICAS,
+    _normalizar_nivel
 )
+
+
+def _chave_widget(prefixo: str, texto: str, indice: int = 0) -> str:
+    """
+    Gera chave determinística e segura para widgets Streamlit.
+    Usa MD5 (não criptográfico, apenas para unicidade de chave).
+    Inclui índice para evitar colisão quando mesmo texto aparece N vezes.
+    """
+    digest = _hashlib.md5(f"{texto}_{indice}".encode('utf-8')).hexdigest()[:12]
+    return f"{prefixo}_{digest}"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Ecologia do Conhecimento UFSC", page_icon="🌌", layout="wide", initial_sidebar_state="expanded")
 
-# Botão na barra lateral para voltar e escolher outros PPGs
-if st.sidebar.button("🔄 Escolher outros PPGs", type="primary"):
-    st.session_state['recarregar'] = True
-    st.rerun()
-
 with st.sidebar:
     st.image("ecograd - logo.png", width='stretch')
     st.markdown("---")
+    if st.session_state.get('dados_carregados'):
+        bases_ativas = st.session_state.get('nomes_selecionados', [])
+        if bases_ativas:
+            st.success(f"📊 Análise Ativa: {', '.join(bases_ativas)}")
+        if st.button("🔄 Escolher outro PPG / Nova Consulta", width="stretch"):
+            st.session_state['dados_carregados'] = False
+            if 'dados_completos' in st.session_state:
+                del st.session_state['dados_completos']
+            if 'nomes_selecionados' in st.session_state:
+                del st.session_state['nomes_selecionados']
+            st.rerun()
     st.markdown("### 🎓 Sobre o EcoGrad")
     st.markdown("O **EcoGrad** é uma plataforma analítica que mapeia e visualiza dados da produção acadêmica da Pós-Graduação (Teses e Dissertações) e Graduação (TCCs).")
     st.markdown("### ⚙️ Como Funciona")
     st.markdown("Os documentos são processados usando algoritmos de redes complexas (Ciência de Redes) aliados a Inteligência Artificial. Isso desvela como pesquisadores, teorias e ferramentas se interconectam na academia.")
     st.markdown("### 🧭 Como Utilizar")
     st.markdown("1. **Selecione os cursos** e origens na aba principal.\n2. Navegue pelos **Dashboards** e visualize perfis no Motor de Busca.\n3. Explore os dados de um Autor, Orientador ou Conceito.\n4. Acesse **Análises Avançadas** para métricas detalhadas.")
-    st.markdown("---")
-    st.markdown("Desenvolvido por **Gustavo Simas**<br>[🔗 GitHub: GSimas](https://github.com/GSimas)", unsafe_allow_html=True)
+
+    # Ícones em SVG para evitar dependência de CDNs externos que o Streamlit pode bloquear
+    icon_github = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>'
+    icon_linkedin = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#0077b5"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.238 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>'
+    icon_instagram = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#E1306C"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.162 6.162 6.162 6.162-2.759 6.162-6.162-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>'
+
+    creditos_html = f"""
+    <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 20px; padding: 10px; border-top: 1px solid rgba(255,255,255,0.1);">
+        <span style="font-size: 14px; opacity: 0.8;">Desenvolvido por <b>Gustavo Simas</b></span>
+        <a href="https://github.com/GSimas" target="_blank" style="text-decoration: none; color: inherit;">{icon_github}</a>
+        <a href="https://www.linkedin.com/in/simasgs/" target="_blank" style="text-decoration: none;">{icon_linkedin}</a>
+        <a href="https://instagram.com/tudoemsimas" target="_blank" style="text-decoration: none;">{icon_instagram}</a>
+    </div>
+    """
+
+    # Usar st.sidebar.markdown com unsafe_allow_html=True garante que o div seja interpretado corretamente
+    st.sidebar.markdown(creditos_html, unsafe_allow_html=True)
 
 st.markdown("""
     <style>
@@ -71,26 +106,34 @@ if 'busca_tipo' not in st.session_state:
 if 'macrotemas_computados' not in st.session_state:
     st.session_state['macrotemas_computados'] = False
 
-# --- TELA DE SELEÇÃO INICIAL (CARREGAMENTO PREGUIÇOSO / LAZY LOADING) ---
-if 'dados_completos' not in st.session_state or st.session_state.get('recarregar'):
+# =====================================================================
+# --- TELA DE SELEÇÃO INICIAL (CORPO PRINCIPAL) ---
+# =====================================================================
+
+if not st.session_state.get('dados_carregados'):
+    # 1. TÍTULO E EXPLICAÇÃO
     st.title("🔌 Seleção de Coleções (Teses, Dissertações e TCCs)")
-    st.markdown("Selecione as coleções que deseja analisar.")
-    
+    st.markdown("Selecione as coleções que deseja analisar para ativar o Dashboard do Ecossistema.")
+
+    # 2. CARREGAMENTO DOS CATÁLOGOS
     catalogo_leve = carregar_catalogo_programas()
     programas_disponiveis = sorted(list(catalogo_leve.keys()))
-    
+
     catalogo_tcc = carregar_catalogo_tcc_frontend()
     tccs_disponiveis = sorted([t.get('curso') for t in catalogo_tcc if t.get('curso')])
-    
+
+    # 3. INTERFACE DE SELEÇÃO (COLUNAS NO CORPO)
     c1_sel, c2_sel = st.columns(2)
     with c1_sel:
         programas_selecionados = st.multiselect("Pós-Graduação (Teses e Dissertações):", programas_disponiveis)
     with c2_sel:
-        tccs_selecionados = st.multiselect("Graduação (TCC):", tccs_disponiveis)
-    
-    if st.button("Carregar Dados e Iniciar Análise", type="primary"):
-        if programas_selecionados or tccs_selecionados:
-            with st.spinner("Lendo as bases de dados e filtrando a seleção. Isso levará alguns segundos..."):
+        cursos_tcc_selecionados = st.multiselect("Graduação (TCC):", tccs_disponiveis)
+
+    # 4. LÓGICA DO BOTÃO DE CARREGAMENTO
+    # O botão só aparece se houver seleção, mas NÃO trava a página (sem st.stop aqui)
+    if programas_selecionados or cursos_tcc_selecionados:
+        if st.button("🚀 Carregar Ecossistema de Conhecimento", width="stretch"):
+            with st.spinner("Lendo as bases de dados e filtrando a seleção..."):
                 dados_combinados = []
                 
                 if programas_selecionados:
@@ -98,186 +141,139 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
                         base_total = carregar_base_consolidada()
                         dados_filtrados_ppg = [d for d in base_total if d.get('programa_origem') in programas_selecionados]
                         dados_combinados.extend(dados_filtrados_ppg)
-                    except FileNotFoundError:
-                        st.error("O arquivo 'base_consolidada_ufsc.json.gz' não foi encontrado.")
-                        st.stop()
+                    except Exception as e:
+                        st.error(f"Erro ao carregar Pós-Graduação: {e}")
                         
-                if tccs_selecionados:
+                if cursos_tcc_selecionados:
                     try:
                         base_tcc = carregar_base_tcc()
-                        dados_filtrados_tcc = [d for d in base_tcc if d.get('programa_origem', '') in tccs_selecionados]
+                        dados_filtrados_tcc = [d for d in base_tcc if d.get('programa_origem', '') in cursos_tcc_selecionados]
                         dados_combinados.extend(dados_filtrados_tcc)
-                    except FileNotFoundError:
-                        st.error("O arquivo 'base_tcc_ufsc.json.gz' não foi encontrado.")
-                        st.stop()
+                    except Exception as e:
+                        st.error(f"Erro ao carregar TCC: {e}")
                 
-                if not dados_combinados:
+                if dados_combinados:
+                    st.session_state['dados_completos'] = dados_combinados
+                    st.session_state['dados_carregados'] = True
+                    st.session_state['nomes_selecionados'] = programas_selecionados + cursos_tcc_selecionados
+                    st.session_state['nome_programa'] = f"{len(st.session_state['nomes_selecionados'])} Origem(ns) Selecionada(s)"
+                    st.session_state['macrotemas_computados'] = True
+                    st.session_state['sna_global_stale'] = True
+                    st.rerun()
+                else:
                     st.warning("Nenhum documento encontrado para a seleção atual.")
-                    st.stop()
-                    
-                st.session_state['dados_completos'] = dados_combinados
-                st.session_state['programas_selecionados_lista'] = programas_selecionados
-                st.session_state['tccs_selecionados_lista'] = tccs_selecionados
-                
-                nomes_combinados = programas_selecionados + tccs_selecionados
-                st.session_state['nome_programa'] = f"{len(nomes_combinados)} Origem(ns) Selecionada(s): {', '.join(nomes_combinados)}"
-                st.session_state['macrotemas_computados'] = True
-                st.session_state['recarregar'] = False
-                st.rerun()
-        else:
-            st.warning("Por favor, selecione pelo menos um PPG ou TCC para continuar.")
-
-    if not programas_selecionados and tccs_selecionados:
-        st.info("ℹ️ Painel CAPES ocultado considerando a seleção exclusiva de Cursos de Graduação.")
-        st.stop()
+    else:
+        st.info("💡 Aguardando seleção de coleções acima para habilitar a análise detalhada.")
 
     # =====================================================================
-    # PANORAMA GLOBAL DA UFSC (CAPES)
+    # 5. PANORAMA GLOBAL DA UFSC (CAPES) - SEMPRE VISÍVEL
     # =====================================================================
     st.markdown("---")
     st.markdown("## 🏛️ Panorama Global da Pós-Graduação (UFSC)")
-    st.markdown("Visão macro do ecossistema institucional com base nos dados oficiais da Plataforma Sucupira (CAPES).")
+    st.markdown("Visão macro institucional baseada nos dados oficiais da Plataforma Sucupira (CAPES).")
     
     with st.spinner("Carregando catálogo da CAPES..."):
         catalogo_capes = carregar_catalogo_capes_ufsc()
         
     if catalogo_capes:
-        # 1. Prepara o DataFrame base
         df_capes = pd.DataFrame.from_dict(catalogo_capes, orient='index')
-        
-        # Filtra apenas programas que estão operacionais
         if 'Situação' in df_capes.columns:
             df_capes = df_capes[df_capes['Situação'].str.contains('FUNCIONAMENTO|ATIVO', case=False, na=True)]
             
-        # 2. Extrai as opções únicas para os filtros
-        op_niveis = ["Mestrado", "Doutorado"] 
-        op_modalidades = sorted([str(x) for x in df_capes['Modalidade'].unique() if x and x != 'Não informado'])
-        op_g_areas = sorted([str(x) for x in df_capes['Grande Área'].unique() if x and x != 'Não informado'])
-        op_areas = sorted([str(x) for x in df_capes['Área de Conhecimento'].unique() if x and x != 'Não informado'])
-        
-        # Extração das notas únicas (ordenadas da maior para a menor)
-        op_notas = sorted([str(x) for x in df_capes['Nota'].unique() if x and x != 'Não informado'], reverse=True)
-        
-        # 3. Desenha a barra de filtros (Ajustado para 5 colunas ou 3+2 para melhor leitura)
-        st.markdown("#### 🔍 Filtros Dinâmicos")
-        
-        # Primeira linha de filtros
-        cf1, cf2, cf3 = st.columns(3)
-        with cf1:
-            f_nivel = st.multiselect("Nível (Grau Acadêmico):", options=op_niveis, default=op_niveis)
-        with cf2:
-            f_mod = st.multiselect("Modalidade:", options=op_modalidades, default=op_modalidades)
-        with cf3:
+        # Filtros Dinâmicos do Panorama
+        st.markdown("#### 🔍 Filtros do Panorama")
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            f_nivel = st.multiselect("Nível:", options=["Mestrado", "Doutorado"], default=["Mestrado", "Doutorado"])
+        with f2:
+            op_mod = sorted(df_capes['Modalidade'].unique().tolist())
+            f_mod = st.multiselect("Modalidade:", options=op_mod, default=op_mod)
+        with f3:
+            op_notas = sorted(df_capes['Nota'].unique().tolist(), reverse=True)
             f_nota = st.multiselect("Nota CAPES:", options=op_notas, default=op_notas)
             
-        # Segunda linha de filtros
-        cf4, cf5 = st.columns(2)
-        with cf4:
-            f_garea = st.multiselect("Grande Área:", options=op_g_areas, default=op_g_areas)
-        with cf5:
-            f_area = st.multiselect("Área de Conhecimento:", options=op_areas, default=op_areas)
-            
-        # 4. Aplica os filtros ao DataFrame
+        # Aplicação dos Filtros ao DF CAPES
         df_filtrado = df_capes.copy()
-        
-        # Lógica especial para o Nível (Contains)
         if f_nivel:
-            mask_nivel = pd.Series(False, index=df_filtrado.index)
-            if "Mestrado" in f_nivel:
-                mask_nivel = mask_nivel | df_filtrado['Grau Acadêmico'].str.contains('Mestrado', case=False, na=False)
-            if "Doutorado" in f_nivel:
-                mask_nivel = mask_nivel | df_filtrado['Grau Acadêmico'].str.contains('Doutorado', case=False, na=False)
-            df_filtrado = df_filtrado[mask_nivel]
-            
-        # Filtros por correspondência exata
+            mask = pd.Series(False, index=df_filtrado.index)
+            if "Mestrado" in f_nivel: mask |= df_filtrado['Grau Acadêmico'].str.contains('Mestrado', na=False)
+            if "Doutorado" in f_nivel: mask |= df_filtrado['Grau Acadêmico'].str.contains('Doutorado', na=False)
+            df_filtrado = df_filtrado[mask]
         if f_mod: df_filtrado = df_filtrado[df_filtrado['Modalidade'].isin(f_mod)]
         if f_nota: df_filtrado = df_filtrado[df_filtrado['Nota'].isin(f_nota)]
-        if f_garea: df_filtrado = df_filtrado[df_filtrado['Grande Área'].isin(f_garea)]
-        if f_area: df_filtrado = df_filtrado[df_filtrado['Área de Conhecimento'].isin(f_area)]
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        if df_filtrado.empty:
-            st.warning("Nenhum programa encontrado com essa combinação de filtros.")
-        else:
-            # 5. Calcula KPIs com o DataFrame Filtrado
-            total_programas = len(df_filtrado)
-            df_filtrado['Nota_Num'] = pd.to_numeric(df_filtrado['Nota'], errors='coerce').fillna(0)
-            excelencia = len(df_filtrado[df_filtrado['Nota_Num'] >= 6])
-            
-            academicos = len(df_filtrado[df_filtrado['Modalidade'].str.contains('Acad', case=False, na=False)])
-            profissionais = len(df_filtrado[df_filtrado['Modalidade'].str.contains('Prof', case=False, na=False)])
-            
-            # Exibe KPIs
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total de Programas (PPGs)", total_programas)
-            c2.metric("Programas de Excelência (Nota 6/7)", excelencia)
-            c3.metric("Modalidade Acadêmica", academicos)
-            c4.metric("Modalidade Profissional", profissionais)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # 6. Desenha Gráficos Interativos (Baseados no filtro)
-            col_graf1, col_graf2 = st.columns([2, 1])
-            
-            with col_graf1:
-                st.markdown("#### Distribuição por Grande Área do Conhecimento")
-                df_areas = df_filtrado['Grande Área'].value_counts().reset_index()
-                df_areas.columns = ['Grande Área', 'Quantidade']
-                
-                fig_areas = px.bar(
-                    df_areas, 
-                    y='Grande Área', 
-                    x='Quantidade', 
-                    orientation='h',
-                    text='Quantidade',
-                    color='Grande Área'
-                )
-                fig_areas.update_layout(
-                    showlegend=False, 
-                    yaxis={'categoryorder':'total ascending'},
-                    xaxis_title="Número de Programas",
-                    yaxis_title="",
-                    margin=dict(l=0, r=0, t=0, b=0)
-                )
-                st.plotly_chart(fig_areas, width='stretch', theme="streamlit")
-                
-            with col_graf2:
-                st.markdown("#### Conceito CAPES (Notas)")
-                df_notas = df_filtrado[df_filtrado['Nota_Num'] > 0]['Nota'].astype(str).value_counts().reset_index()
-                df_notas.columns = ['Nota CAPES', 'Quantidade']
-                
-                if not df_notas.empty:
-                    fig_notas = px.pie(
-                        df_notas, 
-                        names='Nota CAPES', 
-                        values='Quantidade',
-                        hole=0.4,
-                        color='Nota CAPES',
-                        color_discrete_map={'7': '#2ECC71', '6': '#27AE60', '5': '#3498DB', '4': '#F1C40F', '3': '#E67E22'}
-                    )
-                    fig_notas.update_traces(textposition='inside', textinfo='percent+label')
-                    fig_notas.update_layout(margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
-                    st.plotly_chart(fig_notas, width='stretch', theme="streamlit")
-                else:
-                    st.info("Nenhuma nota numérica registrada para os filtros atuais.")
-                
-            # Tabela Geral de Consulta Rápida
-            with st.expander("Tabela Completa de Programas Filtrados"):
-                df_exibicao = df_filtrado[['Nome', 'Código', 'Grande Área', 'Nota', 'Modalidade', 'Grau Acadêmico']].sort_values(by='Nome')
-                st.dataframe(df_exibicao, width='stretch', hide_index=True)
 
-    else:
-        st.info("Nenhum dado da CAPES foi carregado no momento.")
+        # KPIs e Gráficos Automáticos (Sem botão de carregar)
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Programas (PPGs)", len(df_filtrado))
+        k2.metric("Excelência (6/7)", len(df_filtrado[df_filtrado['Nota'].isin(['6', '7'])]))
+        k3.metric("Grandes Áreas", df_filtrado['Grande Area'].nunique() if 'Grande Area' in df_filtrado.columns else df_filtrado['Grande Área'].nunique())
+        k4.metric("Cidades", df_filtrado['Município'].nunique() if 'Município' in df_filtrado.columns else 1)
 
-    # Trava a execução do resto do app (SNA, gráficos, etc.) até o usuário passar desta tela
+        col_g1, col_g2 = st.columns([2, 1])
+        with col_g1:
+            g_area_col = 'Grande Area' if 'Grande Area' in df_filtrado.columns else 'Grande Área'
+            df_graf_area = df_filtrado[g_area_col].value_counts().reset_index()
+            fig_area = px.bar(df_graf_area, x='count', y=g_area_col, orientation='h', color=g_area_col, title="Distribuição por Grande Área")
+            fig_area.update_layout(showlegend=False, height=400, margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_area, width='stretch')
+            
+        with col_g2:
+            df_graf_nota = df_filtrado['Nota'].value_counts().reset_index()
+            fig_nota = px.pie(df_graf_nota, names='Nota', values='count', hole=0.4, title="Conceito CAPES")
+            fig_nota.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_nota, width='stretch')
+
+        # Tabela Geral de Consulta Rápida
+        with st.expander("Tabela Completa de Programas"):
+            df_exibicao = df_filtrado[['Nome', 'Código', 'Grande Área', 'Nota', 'Modalidade', 'Grau Acadêmico']].sort_values(by='Nome')
+            st.dataframe(df_exibicao, width='stretch', hide_index=True)
+
     st.stop()
+
+else:
+    # --- LOGICA QUANDO DADOS ESTÃO CARREGADOS ---
+    if not st.session_state.get('dados_completos'):
+        st.session_state['dados_carregados'] = False
+        st.rerun()
+    
 
 # --- DASHBOARD PRINCIPAL ---
 dados_completos = st.session_state['dados_completos']
 api_key_app = get_gemini_api_key()
 st.title("🌌 Ecologia do Conhecimento")
 st.subheader(f"Base: {st.session_state['nome_programa']}")
+
+@st.cache_data(show_spinner=False)
+def construir_indices_invertidos(_hash_dados, dados):
+    """Pré-computa índices para busca O(1) de documentos por entidade."""
+    idx = {
+        'por_titulo': {},
+        'por_autor': {},      # autor -> lista de docs
+        'por_orientador': {},
+        'por_coorientador': {},
+        'por_palavra_chave': {},
+        'por_macrotema': {},
+    }
+    for d in dados:
+        titulo = d.get('titulo')
+        if titulo:
+            idx['por_titulo'][titulo] = d
+        for a in d.get('autores', []):
+            idx['por_autor'].setdefault(a, []).append(d)
+        if d.get('orientador'):
+            idx['por_orientador'].setdefault(d['orientador'], []).append(d)
+        for co in d.get('co_orientadores', []):
+            idx['por_coorientador'].setdefault(co, []).append(d)
+        for pk in d.get('palavras_chave', []):
+            idx['por_palavra_chave'].setdefault(pk, []).append(d)
+        mt = d.get('macrotema')
+        if mt:
+            idx['por_macrotema'].setdefault(mt, []).append(d)
+    return idx
+
+# Hash estável e barato para invalidar o cache apenas quando a base muda
+hash_dados = (len(dados_completos), id(dados_completos))
+indices = construir_indices_invertidos(hash_dados, dados_completos)
 
 # KPIs Básicos
 autores_set = set([a for d in dados_completos for a in d.get('autores', [])])
@@ -287,8 +283,8 @@ keywords_set = set([kw for d in dados_completos for kw in d.get('palavras_chave'
 
 c1, c2, c3 = st.columns(3)
 c1.metric("📄 Documentos Totais", len(dados_completos))
-c2.metric("🎓 Teses (Doutorado)", len([d for d in dados_completos if "Tese" in d.get('nivel_academico', '')]))
-c3.metric("📜 Dissertações", len([d for d in dados_completos if "Disserta" in d.get('nivel_academico', '')]))
+c2.metric("🎓 Teses (Doutorado)", len([d for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Teses']))
+c3.metric("📜 Dissertações", len([d for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações']))
 
 c4, c5, c6, c7 = st.columns(4)
 c4.metric("✍️ Autores Únicos", len(autores_set))
@@ -320,7 +316,6 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
     
     comparativo_data = []
     
-    from collections import defaultdict
     dados_por_ppg = defaultdict(list)
     for d in dados_completos:
         ppg = d.get('programa_origem', 'Desconhecido')
@@ -330,8 +325,8 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
         comparativo_data.append({
             "PPG": ppg,
             "📄 Documentos Totais": len(docs_ppg),
-            "🎓 Teses (Doutorado)": len([d for d in docs_ppg if "Tese" in d.get('nivel_academico', '')]),
-            "📜 Dissertações": len([d for d in docs_ppg if "Disserta" in d.get('nivel_academico', '')]),
+            "🎓 Teses (Doutorado)": len([d for d in docs_ppg if _normalizar_nivel(d.get('nivel_academico')) == 'Teses']),
+            "📜 Dissertações": len([d for d in docs_ppg if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações']),
             "✍️ Autores Únicos": len(set([a for d in docs_ppg for a in d.get('autores', [])])),
             "🏫 Orientadores": len(set([d.get('orientador') for d in docs_ppg if d.get('orientador')])),
             "🤝 Co-orientadores": len(set([co for d in docs_ppg for co in d.get('co_orientadores', [])])),
@@ -348,7 +343,7 @@ if len(st.session_state.get('programas_selecionados_lista', [])) > 1:
         color="PPG", 
         facet_col="Métrica", 
         facet_col_wrap=4, 
-        template="plotly_dark", 
+        template="streamlit", 
         text="Quantidade",
         height=650
     )
@@ -378,8 +373,6 @@ for nome_ppg in nomes_ppgs:
     
     # 3. Inteligência de Strings (Fuzzy Matching) para lidar com variações da UFSC/CAPES
     if not dados_capes:
-        import difflib # Biblioteca nativa do Python para cálculo de similaridade
-        
         chaves_disponiveis = list(catalogo_capes.keys())
         # Procura a chave mais parecida com pelo menos 65% de similaridade estrutural
         melhores_matches = difflib.get_close_matches(nome_norm_busca, chaves_disponiveis, n=1, cutoff=0.65)
@@ -418,13 +411,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # 4. Descritivo Dinâmico da IA (A Alma do Programa)
 if api_key_app:
-    amostra_docs = []
-    salto = max(1, len(dados_completos) // 25)
-    for i in range(0, len(dados_completos), salto):
-        d = dados_completos[i]
-        amostra_docs.append(f"- {d.get('titulo', '')} | {', '.join(d.get('palavras_chave', []))}")
-        if len(amostra_docs) >= 25: break
-            
     with st.spinner("A IA está analisando a amostra de documentos para sintetizar o perfil epistemológico..."):
         descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
         st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
@@ -433,8 +419,12 @@ else:
 st.markdown("---")
 
 
-# IMPORTANTE: Movemos o cálculo SNA para cá para alimentar a nova Super-Tabela
-sna_global = calcular_sna_global(dados_completos)
+if 'sna_global' not in st.session_state or st.session_state.get('sna_global_stale', True):
+    with st.spinner("Calculando rede complexa (uma única vez)..."):
+        st.session_state['sna_global'] = calcular_sna_global(dados_completos)
+        st.session_state['sna_global_stale'] = False
+
+sna_global = st.session_state['sna_global']
 
 # =========================================================================
 # 🏆 DESTAQUES DO ECOSSISTEMA (RANKINGS DE REDE)
@@ -488,8 +478,8 @@ top_coori_close = get_top_sna(coorientadores_set, 'Closeness')
 top_coori_bet = get_top_sna(coorientadores_set, 'Betweenness')
 
 # SNA Teses e Dissertações
-teses_titulos = [d.get('titulo') for d in dados_completos if 'Tese' in d.get('nivel_academico', '')]
-dissertacoes_titulos = [d.get('titulo') for d in dados_completos if 'Disserta' in d.get('nivel_academico', '')]
+teses_titulos = [d.get('titulo') for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Teses']
+dissertacoes_titulos = [d.get('titulo') for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações']
 
 top_tese_close = get_top_sna(teses_titulos, 'Closeness')
 top_tese_bet = get_top_sna(teses_titulos, 'Betweenness')
@@ -515,20 +505,20 @@ with tab_dest0:
     c1_0, c2_0 = st.columns(2)
     with c1_0:
         fig_ori = px.bar(df_ori, y='Orientador', x='Orientações', orientation='h', title='Top 10 Orientadores', text='Orientações')
-        fig_ori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_ori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_ori, width='stretch')
 
         fig_coori = px.bar(df_coori, y='Coorientador', x='Coorientações', orientation='h', title='Top 10 Coorientadores', text='Coorientações')
-        fig_coori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_coori.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_coori, width='stretch')
 
     with c2_0:
         fig_kw = px.bar(df_kw, y='Palavra-chave', x='Ocorrências', orientation='h', title='Top 10 Palavras-chave', text='Ocorrências')
-        fig_kw.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_kw.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_kw, width='stretch')
 
         fig_mt = px.bar(df_mt, y='Macrotema', x='Documentos', orientation='h', title='Top 10 Macrotemas', text='Documentos')
-        fig_mt.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="plotly_dark", height=350, margin=dict(l=0, r=0, t=40, b=0))
+        fig_mt.update_layout(showlegend=False, xaxis_title="", yaxis_title="", template="streamlit", height=350, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_mt, width='stretch')
 
 with tab_dest1:
@@ -645,17 +635,22 @@ if termo_ativo:
         from collections import Counter
         
         # 1. Coleta os documentos relacionados ao termo ativo para tirar a média
-        if tipo_busca == "Documento": docs_alvo = [d for d in dados_completos if d.get('titulo') == termo_ativo]
-        elif tipo_busca == "Autor": docs_alvo = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
-        elif tipo_busca == "Orientador": docs_alvo = [d for d in dados_completos if d.get('orientador') == termo_ativo]
-        elif tipo_busca == "Co-orientador": docs_alvo = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
-        elif tipo_busca == "Palavra-chave": docs_alvo = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
-        elif tipo_busca == "Macrotema": docs_alvo = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
+        if tipo_busca == "Documento": docs_alvo = indices['por_titulo'].get(termo_ativo, [])
+        elif tipo_busca == "Autor": docs_alvo = indices['por_autor'].get(termo_ativo, [])
+        elif tipo_busca == "Orientador": docs_alvo = indices['por_orientador'].get(termo_ativo, [])
+        elif tipo_busca == "Co-orientador": docs_alvo = indices['por_coorientador'].get(termo_ativo, [])
+        elif tipo_busca == "Palavra-chave": docs_alvo = indices['por_palavra_chave'].get(termo_ativo, [])
+        elif tipo_busca == "Macrotema": docs_alvo = indices['por_macrotema'].get(termo_ativo, [])
         else: docs_alvo = []
 
         if docs_alvo:
-            # A. Pureza Temática (NMF) - Média do portfólio da entidade
-            purezas = [d.get('pureza_nmf', 0.0) for d in docs_alvo if 'pureza_nmf' in d]
+            # A. Pureza/Peculiaridade Temática (NMF) - Média do portfólio da entidade
+            # 🛡️ Blindagem: Se docs_alvo for um único documento (dicionário), transformamos numa lista de um item
+            if isinstance(docs_alvo, dict):
+                docs_alvo = [docs_alvo]
+
+            # Agora garantimos que 'd' é sempre um dicionário antes de tentar usar o .get()
+            purezas = [d.get('pureza_nmf', 0.0) for d in docs_alvo if isinstance(d, dict) and 'pureza_nmf' in d]
             pureza_media = sum(purezas) / len(purezas) if purezas else 0.0
             
             if pureza_media >= 85.0: perfil = "Altamente Especializado"
@@ -679,7 +674,7 @@ if termo_ativo:
             # Se for um documento único, exibe o valor seco. Se for autor/orientador, avisa que é a "Média" do portfólio.
             lbl_media = " (Média)" if len(docs_alvo) > 1 else ""
             
-            col_rx1.metric(f"Pureza NMF{lbl_media}", f"{pureza_media:.1f}%", f"Perfil: {perfil}", delta_color="off")
+            col_rx1.metric(f"Peculiaridade NMF{lbl_media}", f"{pureza_media:.1f}%", f"Perfil: {perfil}", delta_color="off")
             col_rx2.metric("Densidade Local (SNA)", f"{densidade:.2f}", "Forte Coesão / Panelinha" if densidade > 0.8 else "Conexões Esparsas", delta_color="off")
             col_rx3.metric(f"Raridade IDF{lbl_media}", f"{raridade_pct:.1f}%", "Vocabulário Raro/Nicho" if raridade_pct > 60 else "Vocabulário Comum", delta_color="off")
             st.markdown("---")
@@ -715,7 +710,7 @@ if termo_ativo:
                 st.write(doc.get('resumo', 'Resumo não disponível.'))
                 
         elif tipo_busca == "Autor":
-            docs = [d for d in dados_completos if termo_ativo in d.get('autores', [])]
+            docs = indices['por_autor'].get(termo_ativo, [])
             
             programas = sorted(list(set([d.get('programa_origem') for d in docs if d.get('programa_origem')])))
             if programas:
@@ -732,9 +727,9 @@ if termo_ativo:
             if orientadores or co_orientadores:
                 st.write("**👨‍🏫 Orientadores e Co-orientadores:**")
                 for ori in sorted(list(orientadores)):
-                    st.button(f"🏫 Orientador: {ori}", key=f"btn_ori_aut_{abs(hash(ori))}", on_click=navegar_para, args=("Orientador", ori))
+                    st.button(f"🏫 Orientador: {ori}", key=_chave_widget("btn_ori_aut", ori), on_click=navegar_para, args=("Orientador", ori))
                 for co in sorted(list(co_orientadores)):
-                    st.button(f"🤝 Co-orientador: {co}", key=f"btn_co_aut_{abs(hash(co))}", on_click=navegar_para, args=("Co-orientador", co))
+                    st.button(f"🤝 Co-orientador: {co}", key=_chave_widget("btn_co_aut", co), on_click=navegar_para, args=("Co-orientador", co))
                 
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -743,9 +738,9 @@ if termo_ativo:
             
         elif tipo_busca in ["Orientador", "Co-orientador"]:
             if tipo_busca == "Orientador":
-                docs = [d for d in dados_completos if d.get('orientador') == termo_ativo]
+                docs = indices['por_orientador'].get(termo_ativo, [])
             else:
-                docs = [d for d in dados_completos if termo_ativo in d.get('co_orientadores', [])]
+                docs = indices['por_coorientador'].get(termo_ativo, [])
                 
             programas = sorted(list(set([d.get('programa_origem') for d in docs if d.get('programa_origem')])))
             if programas:
@@ -830,7 +825,7 @@ if termo_ativo:
                     for i, aluno in enumerate(alunos_professores):
                          # Roteamento inteligente: manda pro perfil de Orientador ou Co-orientador dependendo de onde ele atua
                          tipo_nav = "Orientador" if aluno in orientadores_set else "Co-orientador"
-                         chave_nav = f"btn_descendente_{abs(hash(aluno))}_{i}"
+                         chave_nav = _chave_widget("btn_descendente", aluno, i)
                          st.button(f"🎓 {aluno} (Ver Perfil Acadêmico)", key=chave_nav, on_click=navegar_para, args=(tipo_nav, aluno))
                 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -853,14 +848,13 @@ if termo_ativo:
             with st.expander(f"Ver lista de todos os {len(alunos_orientados)} alunos"):
                 for i, aluno in enumerate(alunos_orientados):
                     icone_aluno = "🎓🔁" if aluno in alunos_duplos else "👤"
-                    st.button(f"{icone_aluno} {aluno}", key=f"btn_aluno_{tipo_busca}_{abs(hash(aluno))}_{i}", on_click=navegar_para, args=("Autor", aluno))
+                    st.button(f"{icone_aluno} {aluno}", key=_chave_widget(f"btn_aluno_{tipo_busca}", aluno, i), on_click=navegar_para, args=("Autor", aluno))
 
             st.markdown("<br>", unsafe_allow_html=True)
             
             # --- 4. LISTA DE DOCUMENTOS ---
             st.write(f"**Documentos {'Orientados' if tipo_busca == 'Orientador' else 'Co-orientados'} ({len(docs)}):**")
             
-            from collections import defaultdict
             docs_por_mt = defaultdict(list)
             for d in docs:
                 docs_por_mt[d.get('macrotema', 'Multidisciplinar / Transversal')].append(d)
@@ -869,11 +863,11 @@ if termo_ativo:
                 for mt, docs_mt in docs_por_mt.items():
                     st.markdown(f"**🏷️ {mt}**")
                     for i, d in enumerate(docs_mt):
-                        chave_unica = f"btn_{tipo_busca}_{abs(hash(d['titulo']))}_{i}"
+                        chave_unica = _chave_widget(f"btn_{tipo_busca}", d['titulo'], i)
                         st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
                         
         elif tipo_busca == "Palavra-chave":
-            docs = [d for d in dados_completos if termo_ativo in d.get('palavras_chave', [])]
+            docs = indices['por_palavra_chave'].get(termo_ativo, [])
             gerar_tabela_ql_cruzado_perfil(
                 docs,
                 dados_completos,
@@ -883,16 +877,16 @@ if termo_ativo:
             
             with st.expander(f"📚 Ver Lista Completa de Documentos Associados ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    chave_unica = f"btn_pk_{abs(hash(d['titulo']))}_{i}"
+                    chave_unica = _chave_widget("btn_pk", d['titulo'], i)
                     st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
             
         elif tipo_busca == "Macrotema":
-            docs = [d for d in dados_completos if d.get('macrotema') == termo_ativo]
+            docs = indices['por_macrotema'].get(termo_ativo, [])
             gerar_tabela_entidades_por_macrotema(docs, dados_completos)
             
             with st.expander(f"📚 Explorar Teses e Dissertações da Categoria ({len(docs)})"):
                 for i, d in enumerate(docs): 
-                    chave_unica = f"btn_mt_{abs(hash(d['titulo']))}_{i}"
+                    chave_unica = _chave_widget("btn_mt", d['titulo'], i)
                     st.button(f"📄 {d['titulo']}", key=chave_unica, on_click=navegar_para, args=("Documento", d['titulo']))
                     
     with col_sna:
@@ -989,9 +983,9 @@ if termo_ativo:
                             df_plot['Volume'] = df_plot['Volume'].cumsum()
 
                     if color_col:
-                        fig = graf_func(df_plot, x='ano', y='Volume', color=color_col, title=title_fig, template="plotly_dark", **barmode_kw, **marker_kw, **facet_kws)
+                        fig = graf_func(df_plot, x='ano', y='Volume', color=color_col, title=title_fig, template="streamlit", **barmode_kw, **marker_kw, **facet_kws)
                     else:
-                        fig = graf_func(df_plot, x='ano', y='Volume', title=title_fig, template="plotly_dark", **marker_kw, **facet_kws)
+                        fig = graf_func(df_plot, x='ano', y='Volume', title=title_fig, template="streamlit", **marker_kw, **facet_kws)
                     
                     fig.update_layout(xaxis_title="Ano", yaxis_title="Quantidade", xaxis=dict(tickmode='linear', dtick=1))
                     if separar_ppg_hist: fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
@@ -1010,7 +1004,7 @@ if termo_ativo:
             if tem_multiplos_ppgs:
                 separar_nuvem_ppg = col_nuvem2.radio("Separar Nuvem por PPG:", ["Não", "Sim"], horizontal=True, key="sep_nuvem_ppg_perfil") == "Sim"
 
-            stopwords = set(['de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'by'])
+            stopwords = STOPWORDS_ACADEMICAS
             
             def extrair_texto_docs(lista_docs):
                 texto_completo = []
@@ -1167,7 +1161,7 @@ if termo_ativo:
             with st.expander(f"Navegar para os perfis ({titulo_coluna_item})"):
                 for idx, row in df.iterrows():
                     item_nome = row[titulo_coluna_item]
-                    st.button(f"Ir para: {item_nome}", key=f"btn_sim_{tipo_nav}_{hash(item_nome)}_{idx}", on_click=navegar_para, args=(tipo_nav, item_nome))
+                    st.button(f"Ir para: {item_nome}", key=_chave_widget(f"btn_sim_{tipo_nav}", item_nome, idx), on_click=navegar_para, args=(tipo_nav, item_nome))
 
         if not similares or all(len(v) == 0 for v in similares.values()):
             st.warning("Este item possui conexões muito isoladas do resto do programa para que vizinhos próximos sejam calculados com precisão.")

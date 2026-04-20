@@ -28,6 +28,522 @@ import scipy.stats as sps
 from app_config import get_gemini_api_key, get_neo4j_credentials
 from gemini_utils import DEFAULT_FAST_MODELS, DEFAULT_TEXT_MODELS, generate_content, response_text
 
+# --- CONSTANTE GLOBAL: Stopwords para análise lexical ---
+# Unificado para PT e EN. Inclui termos acadêmicos genéricos que poluem nuvens e redes.
+STOPWORDS_ACADEMICAS: frozenset = frozenset({
+    'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com',
+    'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas',
+    'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo',
+    'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me',
+    'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta',
+    'sob', 'perspectiva', 'frente', 'partir', 'baseado',
+    'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento',
+    'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia',
+    'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram',
+    'são', 'ser', 'através', 'forma', 'apresenta',
+    'the', 'of', 'and', 'in', 'to', 'a', 'is', 'for', 'by', 'on', 'with', 'an',
+    'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has',
+    'have', 'was', 'were', 'not', 'but',
+})
+
+
+def _normalizar_documentos(dados: list) -> list:
+    """
+    Garante tipos consistentes em todos os documentos.
+    Chamada pelos loaders para evitar bugs de tipo downstream.
+    Modifica a lista in-place para economizar memória e retorna ela.
+    """
+    for d in dados:
+        ano_raw = d.get('ano')
+        if ano_raw is not None:
+            try:
+                d['ano'] = int(str(ano_raw).strip())
+            except (ValueError, TypeError):
+                d['ano'] = None
+
+        for campo in ('autores', 'co_orientadores', 'palavras_chave'):
+            if not isinstance(d.get(campo), list):
+                d[campo] = []
+
+        for campo in ('titulo', 'orientador', 'macrotema', 'resumo',
+                      'programa_origem', 'nivel_academico', 'url'):
+            if d.get(campo) is None:
+                d[campo] = ''
+
+        d['palavras_chave'] = [
+            pk for pk in d['palavras_chave']
+            if pk and str(pk).strip()
+        ]
+    return dados
+
+
+def _estimar_gamma_lei_potencia(degrees: list) -> float:
+    """
+    Estimador MLE (máxima verossimilhança) do expoente γ da lei de potência.
+    Robusto a redes degeneradas (graus iguais, nós isolados, amostra pequena).
+    Retorna 0.0 em vez de lançar exceção para qualquer caso edge.
+
+    Fórmula: γ = 1 + n / Σ ln(xi / x_min)
+    Referência: Clauset, Shalizi & Newman (2009), SIAM Review.
+    """
+    degrees_validos = [d for d in degrees if isinstance(d, (int, float)) and d > 0]
+
+    if len(degrees_validos) < 10:
+        return 0.0
+
+    d_min = min(degrees_validos)
+    if d_min < 1:
+        return 0.0
+
+    try:
+        log_sum = sum(math.log(d / d_min) for d in degrees_validos)
+        if log_sum <= 0:
+            return 0.0
+        return 1.0 + len(degrees_validos) / log_sum
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return 0.0
+
+
+def classificar_por_percentil(row, x_mid, y_mid):
+    """Classifica um ponto no quadrante do radar conforme limiares de percentil."""
+    mom = row['Momentum (Burst)']
+    nov = row['Novidade (Estrutural * IDF)']
+    if mom > x_mid and nov > y_mid:
+        return "↗️ Tendência"
+    elif mom <= x_mid and nov > y_mid:
+        return "↖️ Sinal Fraco"
+    elif mom > x_mid and nov <= y_mid:
+        return "↘️ Mainstream"
+    else:
+        return "↙️ Base/Declínio"
+
+# NOVO — Adicionar ao backend.py, logo após calcular_sna_global
+@st.cache_data(show_spinner=False)
+def calcular_betweenness_bootstrap(dados_lista, tipo='Palavra-chave',
+                                    n_bootstrap=100, fracao_amostra=0.85):
+    """
+    Calcula betweenness de termos via bootstrap (100 reamostragens com reposição).
+    Retorna a mediana — mais estável que o valor pontual em redes pequenas.
+
+    Parâmetros:
+        dados_lista: lista de dicionários (documentos)
+        tipo: 'Palavra-chave' ou 'Macrotema'
+        n_bootstrap: número de reamostragens (default 100)
+        fracao_amostra: tamanho de cada amostra em relação à base (default 0.85)
+
+    Retorna:
+        dict {termo: {'median': float, 'p25': float, 'p75': float, 'std': float}}
+    """
+    import networkx as nx
+    import numpy as np
+    import random
+    from collections import defaultdict
+    import itertools as _it
+
+    if not dados_lista:
+        return {}
+
+    n_docs = len(dados_lista)
+    tamanho_amostra = max(10, int(n_docs * fracao_amostra))
+
+    # Coleta resultados de cada iteração
+    acumulador = defaultdict(list)
+
+    rng = random.Random(42)  # seed fixo para reprodutibilidade
+
+    # Aproximação k no betweenness para não estourar custo em redes grandes
+    def _construir_grafo(amostra):
+        G = nx.Graph()
+        for d in amostra:
+            if tipo == 'Palavra-chave':
+                termos = d.get('palavras_chave', [])
+            else:  # Macrotema
+                mt = d.get('macrotema')
+                termos = [mt] if mt else []
+            termos = [t for t in termos if t]  # limpa None/vazios
+            for u, v in _it.combinations(termos, 2):
+                if G.has_edge(u, v):
+                    G[u][v]['weight'] += 1
+                else:
+                    G.add_edge(u, v, weight=1)
+        return G
+
+    for _ in range(n_bootstrap):
+        # Amostragem com reposição
+        amostra = [dados_lista[rng.randrange(n_docs)] for _ in range(tamanho_amostra)]
+        G = _construir_grafo(amostra)
+
+        if G.number_of_nodes() == 0:
+            continue
+
+        # k aproximado para manter o custo sob controle mesmo com 100 iterações
+        k_samples = min(50, G.number_of_nodes())
+        try:
+            bet = nx.betweenness_centrality(G, k=k_samples, weight='weight', seed=42)
+        except Exception:
+            continue
+
+        for termo, valor in bet.items():
+            acumulador[termo].append(valor)
+
+    # Consolida estatísticas
+    resultado = {}
+    for termo, valores in acumulador.items():
+        if len(valores) < 5:  # termo apareceu em menos de 5 bootstraps — muito instável
+            continue
+        arr = np.array(valores)
+        resultado[termo] = {
+            'median': float(np.median(arr)),
+            'p25': float(np.percentile(arr, 25)),
+            'p75': float(np.percentile(arr, 75)),
+            'std': float(np.std(arr)),
+            'n_obs': len(valores)  # em quantos bootstraps o termo apareceu
+        }
+
+    return resultado
+
+@st.cache_data(show_spinner=False)
+def otimizar_parametros_foresight(_dados_lista, tipo='Palavra-chave'):
+    dados_lista = _dados_lista
+    import pandas as pd
+    import itertools
+    import math
+
+    dados_lista = _dados_lista
+
+    anos_corte = [2017, 2018, 2019, 2020] 
+    janelas_burst = [2, 3, 4]  
+    janelas_futuro = [3, 4, 5] 
+    percentis_corte = [0.50, 0.65, 0.80] 
+    
+    resultados_grid = []
+    combinacoes = list(itertools.product(anos_corte, janelas_burst, janelas_futuro, percentis_corte))
+    
+    for ano_corte, j_burst, j_futuro, p_corte in combinacoes:
+        df_bt = validar_foresight_historico(
+            dados_lista, 
+            ano_corte_teste=ano_corte, 
+            janela_burst=j_burst, 
+            janela_futuro=j_futuro, 
+            percentil_corte=p_corte,
+            tipo=tipo
+        )
+
+        dados_lista = _dados_lista
+        
+        if df_bt.empty: continue
+        
+        tp, fp, tn, fn = 0, 0, 0, 0
+        
+        for _, row in df_bt.iterrows():
+            prev = row['Previsão Passada (T1)']
+            ver = row['Veredito do Modelo']
+            is_positive_pred = ("Sinal Fraco" in prev or "Tendência" in prev)
+            
+            if is_positive_pred:
+                if '✅' in ver: tp += 1
+                else: fp += 1
+            else:
+                if '✅' in ver: tn += 1
+                else: fn += 1
+                
+        numerador = (tp * tn) - (fp * fn)
+        denominador = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+        
+        # 🔴 CORREÇÃO CRÍTICA: Impedir entrada silenciosa de modelos colapsados (Zero Division)
+        if denominador == 0: 
+            continue
+            
+        mcc = numerador / denominador
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        
+        if (tp + fp) == 0: continue
+
+        resultados_grid.append({
+            'Ano Corte': ano_corte,
+            'Passado (Burst)': j_burst,
+            'Futuro (Previsão)': j_futuro,
+            'Corte (%)': int(p_corte * 100),
+            'MCC (Robusto)': round(mcc, 3),
+            'F1-Score': round(f1_score, 3),
+            'Precisão': round(precision, 3),
+            'Recall': round(recall, 3),
+            'N Total': tp + fp + tn + fn, # 🟡 CORREÇÃO: Adicionado para auditar a força estatística
+            'Verdadeiros (+)': tp, 'Falsos (+)': fp, 
+            'Verdadeiros (-)': tn, 'Falsos (-)': fn
+        })
+        
+    df_resultado = pd.DataFrame(resultados_grid)
+    if not df_resultado.empty:
+        df_resultado = df_resultado.sort_values(by='MCC (Robusto)', ascending=False).reset_index(drop=True)
+        
+    return df_resultado
+
+@st.cache_data(show_spinner=False)
+def validar_foresight_historico(_dados_lista, ano_corte_teste=2018, janela_burst=3, janela_futuro=4, percentil_corte=0.65, tipo='Palavra-chave'):
+    dados_lista = _dados_lista
+    import pandas as pd
+    import math
+    import networkx as nx
+    from collections import Counter
+    import itertools
+
+    df = pd.DataFrame(dados_lista)
+    if 'ano' not in df.columns: return pd.DataFrame()
+    df['Ano'] = pd.to_numeric(df['ano'], errors='coerce')
+    df = df.dropna(subset=['Ano'])
+    if df.empty: return pd.DataFrame()
+    df['Ano'] = df['Ano'].astype(int)
+
+    df_t1 = df[df['Ano'] <= ano_corte_teste]
+    df_t1_passado = df_t1[df_t1['Ano'] <= (ano_corte_teste - janela_burst)]
+    df_t1_recente = df_t1[df_t1['Ano'] > (ano_corte_teste - janela_burst)]
+    df_t2 = df[(df['Ano'] > ano_corte_teste) & (df['Ano'] <= ano_corte_teste + janela_futuro)]
+
+    if df_t1_passado.empty or df_t1_recente.empty or df_t2.empty:
+        return pd.DataFrame()
+
+    def get_freqs(df_subset):
+        lista = []
+        for d in df_subset.to_dict('records'):
+            if tipo == 'Palavra-chave': lista.extend(d.get('palavras_chave', []))
+            elif tipo == 'Macrotema': 
+                mt = d.get('macrotema')
+                if mt: lista.append(mt)
+        return Counter(lista)
+
+    freq_t1_pass = get_freqs(df_t1_passado)
+    freq_t1_rec = get_freqs(df_t1_recente)
+    freq_t1_total = freq_t1_pass + freq_t1_rec
+    freq_t2 = get_freqs(df_t2)
+
+    G_t1 = nx.Graph()
+    for d in df_t1.to_dict('records'):
+        termos = d.get('palavras_chave', []) if tipo == 'Palavra-chave' else ([d.get('macrotema')] if d.get('macrotema') else [])
+        for u, v in itertools.combinations(termos, 2):
+            if G_t1.has_edge(u, v): G_t1[u][v]['weight'] += 1
+            else: G_t1.add_edge(u, v, weight=1)
+
+    # 🟡 CORREÇÃO: k=100 para garantir agilidade no Grid Search sem perder fidelidade de ranking
+    num_nodes = G_t1.number_of_nodes()
+    k_samples = min(100, num_nodes) if num_nodes > 0 else None 
+    betweenness_t1 = nx.betweenness_centrality(G_t1, k=k_samples, weight='weight', seed=42)
+
+    resultados_t1 = []
+    total_docs_t1 = len(df_t1)
+    limite_sup = max(10, total_docs_t1 * 0.10)
+    
+    # 🟡 CORREÇÃO: IDF Máximo para normalização [0,1]
+    max_idf = math.log10(total_docs_t1) if total_docs_t1 > 1 else 1
+
+    n_docs_pass_t1 = len(df_t1_passado)
+    n_docs_rec_t1 = len(df_t1_recente)
+
+    for termo, total_t1 in freq_t1_total.items():
+        rec_t1 = freq_t1_rec.get(termo, 0)
+        if total_t1 < 3 or rec_t1 < 1 or total_t1 > limite_sup: continue
+
+        # CÓDIGO NOVO — Momentum normalizado pelo tamanho da janela
+        taxa_rec_t1 = (rec_t1 / n_docs_rec_t1) if n_docs_rec_t1 > 0 else 0.0
+        taxa_pass_t1 = (freq_t1_pass.get(termo, 0) / n_docs_pass_t1) if n_docs_pass_t1 > 0 else 0.0
+
+        epsilon_t1 = 1.0 / max(n_docs_pass_t1, 1)
+        momentum_rel_t1 = (taxa_rec_t1 - taxa_pass_t1) / (taxa_pass_t1 + epsilon_t1)
+        momentum_t1 = momentum_rel_t1 * math.log10(total_t1 + 1)
+
+        tracao_t1 = (rec_t1 / total_t1) if total_t1 > 0 else 0  # mantido para exibição
+        
+        bet = betweenness_t1.get(termo, 0.0)
+        idf = math.log10(total_docs_t1 / total_t1) if total_t1 > 0 else 0
+        
+        # 🟡 CORREÇÃO: IDF normalizado para não esmagar a variância do Betweenness
+        idf_norm = idf / max_idf 
+        novidade_t1 = bet * idf_norm
+
+        resultados_t1.append({
+            'Termo': termo, 'Momentum': momentum_t1, 'Novidade': novidade_t1, 'Vol_T1': total_t1
+        })
+
+    df_res_t1 = pd.DataFrame(resultados_t1)
+    if df_res_t1.empty: return pd.DataFrame()
+
+    limiar_mom = df_res_t1['Momentum'].quantile(percentil_corte)
+    limiar_nov = df_res_t1['Novidade'].quantile(percentil_corte)
+
+    def classificar(row):
+        if row['Momentum'] > limiar_mom and row['Novidade'] > limiar_nov: return "↗️ Tendência"
+        elif row['Momentum'] <= limiar_mom and row['Novidade'] > limiar_nov: return "↖️ Sinal Fraco"
+        elif row['Momentum'] > limiar_mom and row['Novidade'] <= limiar_nov: return "↘️ Mainstream"
+        else: return "↙️ Base/Declínio"
+
+    df_res_t1['Classificação em T1'] = df_res_t1.apply(classificar, axis=1)
+
+    analise_final = []
+    total_docs_t2 = len(df_t2)
+
+    for _, row in df_res_t1.iterrows():
+        termo = row['Termo']
+        quad = row['Classificação em T1']
+        vol_t2 = freq_t2.get(termo, 0)
+
+        taxa_t1 = (row['Vol_T1'] / total_docs_t1) * 100
+        taxa_t2 = (vol_t2 / total_docs_t2) * 100 if total_docs_t2 > 0 else 0
+        crescimento_real = ((taxa_t2 - taxa_t1) / taxa_t1) * 100 if taxa_t1 > 0 else 0
+
+        status = ""
+        # 🔴 CORREÇÕES CRÍTICAS DE LIMIARES: Assimetria resolvida e Mainstream apertado
+        if quad == "↖️ Sinal Fraco":
+            status = "✅ Sucesso (Emergiu/Explodiu)" if crescimento_real >= 25 and vol_t2 >= 3 else "❌ Falso Positivo (Ruído)"
+        elif quad == "↗️ Tendência":
+            # Tendência exige pelo menos 10% de salto real, não apenas "qualquer" crescimento
+            status = "✅ Confirmado (Continuou Fogo)" if crescimento_real >= 10 and vol_t2 >= 3 else "❌ Falso Positivo (Esfriou)"
+        elif quad == "↙️ Base/Declínio":
+            status = "✅ Confirmado (Caiu/Morreu)" if crescimento_real <= 0 or vol_t2 < 3 else "❌ Falso Negativo (Ressurgiu)"
+        elif quad == "↘️ Mainstream":
+            # Mainstream rigoroso: se cresceu mais de 5%, não é platô!
+            status = "✅ Confirmado (Platô/Caiu)" if crescimento_real <= 5 else "❌ Falso Negativo (Voltou a Crescer)"
+
+        analise_final.append({
+            'Termo': termo,
+            'Previsão Passada (T1)': quad,
+            'Vol. T1': row['Vol_T1'],
+            'Vol. T2 (Futuro)': vol_t2,
+            'Variação Real Uso (%)': round(crescimento_real, 1),
+            'Veredito do Modelo': status
+        })
+
+    return pd.DataFrame(analise_final).sort_values(by='Variação Real Uso (%)', ascending=False)
+
+@st.cache_data
+def preparar_radar_foresight(_dados_lista, sna_global=None, janela_recente=3,
+                              tipo='Palavra-chave', bet_bootstrap=None):
+    dados_lista = _dados_lista
+    dados_lista = _dados_lista
+    
+    """
+    Calcula o Score de Emergência para o Radar de Foresight Acadêmico.
+
+    Cruza Momentum Temporal (burst ponderado por taxa relativa de crescimento)
+    com Novidade Estrutural (Betweenness × IDF), inspirado em Leydesdorff e Kleinberg.
+
+    Parâmetros:
+        dados_lista: lista de dicionários com os documentos da base
+        sna_global: dict com métricas SNA pré-calculadas por calcular_sna_global()
+        janela_recente: int — número de anos considerados como "recente" para burst (default: 3)
+        tipo: 'Palavra-chave' ou 'Macrotema' — dimensão de análise
+        bet_bootstrap: dict opcional com resultado de calcular_betweenness_bootstrap().
+                      Se fornecido, usa mediana de 100 reamostragens bootstrap em vez
+                      do valor pontual do sna_global. Mais estável em bases pequenas.
+
+    Retorna:
+        pd.DataFrame com colunas: Termo, Total, Aparições Recentes, Tração (%),
+        Momentum (Burst), Novidade (Estrutural * IDF), Bet. Robusto?, Bet. IQR
+    """
+    import pandas as pd
+    from collections import Counter
+    import math
+    
+    sna_global = sna_global or {}
+    if not dados_lista: return pd.DataFrame()
+        
+    df = pd.DataFrame(dados_lista)
+    if 'ano' not in df.columns: return pd.DataFrame()
+        
+    df['Ano'] = pd.to_numeric(df['ano'], errors='coerce')
+    df = df.dropna(subset=['Ano'])
+    if df.empty: return pd.DataFrame()
+    df['Ano'] = df['Ano'].astype(int)
+    
+    total_docs = len(df)
+    ano_maximo = df['Ano'].max()
+    ano_corte = ano_maximo - janela_recente
+    
+    df_passado = df[df['Ano'] <= ano_corte]
+    df_recente = df[df['Ano'] > ano_corte]
+    
+    if df_passado.empty or df_recente.empty:
+        return pd.DataFrame()
+    
+    def extrair_frequencias(df_periodo):
+        lista = []
+        for d in df_periodo.to_dict('records'):
+            if tipo == 'Palavra-chave':
+                lista.extend(d.get('palavras_chave', []))
+            elif tipo == 'Macrotema':
+                mt = d.get('macrotema')
+                if mt: lista.append(mt)
+        return Counter(lista)
+        
+    freq_passado = extrair_frequencias(df_passado)
+    freq_recente = extrair_frequencias(df_recente)
+    freq_total = freq_passado + freq_recente
+    
+    resultados = []
+    limite_superior = max(10, total_docs * 0.10) 
+
+    # NOVO — tamanho de cada janela temporal (para normalização relativa)
+    n_docs_passado = len(df_passado)
+    n_docs_recente = len(df_recente)
+    
+    for termo, total in freq_total.items():
+        recente = freq_recente.get(termo, 0)
+        
+        # 🛡️ Filtro Anti-Ruído: Precisa ter alguma expressão recente e total > 2
+        if total < 3 or recente < 2 or total > limite_superior:
+            continue 
+            
+        passado = freq_passado.get(termo, 0)
+        
+        # CÓDIGO NOVO — Momentum em taxas relativas (remove viés de crescimento do programa)
+        # Taxa de prevalência do termo em cada período (% dos documentos do período)
+        taxa_recente = (recente / n_docs_recente) if n_docs_recente > 0 else 0.0
+        taxa_passado = (passado / n_docs_passado) if n_docs_passado > 0 else 0.0
+
+        # Momentum = crescimento relativo da taxa, com suavização de Laplace para evitar
+        # divisão por zero quando o termo é completamente novo (passado=0)
+        epsilon = 1.0 / max(n_docs_passado, 1)  # suavização proporcional ao tamanho da base
+        momentum_relativo = (taxa_recente - taxa_passado) / (taxa_passado + epsilon)
+
+        # Log-dampening do volume total: evita que termos com 3 aparições "ganhem"
+        # de termos com 30 aparições só porque cresceram proporcionalmente mais.
+        # Isso mantém a intuição original do burst mas aplicada sobre taxas relativas.
+        momentum = momentum_relativo * math.log10(total + 1)
+
+        # Tração para exibição (permanece interpretável como % de recência)
+        tracao_pura = (recente / total) if total > 0 else 0.0
+        
+        # CÓDIGO NOVO — usa bootstrap se disponível, fallback para pontual
+        if bet_bootstrap and termo in bet_bootstrap:
+            # Versão robusta: mediana de 100 reamostragens
+            betweenness = bet_bootstrap[termo]['median']
+            bet_estavel = True
+        else:
+            # Fallback: valor pontual do sna_global (legado)
+            metricas_sna = sna_global.get(termo, {})
+            betweenness = metricas_sna.get('Betweenness', 0.0)
+            bet_estavel = False
+
+        idf = math.log10(total_docs / total) if total > 0 else 0
+        novidade_real = betweenness * idf
+        
+        resultados.append({
+            'Termo': termo,
+            'Total': total,
+            'Aparições Recentes': recente,
+            'Tração (%)': round(tracao_pura * 100, 1),
+            'Momentum (Burst)': round(momentum, 4),
+            'Novidade (Estrutural * IDF)': round(novidade_real, 6),
+            'Bet. Robusto?': bet_estavel,  # NOVO — transparência para o usuário
+            # Se quiser exibir faixa de confiança no hover do radar:
+            'Bet. IQR': round(
+                bet_bootstrap[termo]['p75'] - bet_bootstrap[termo]['p25'], 6
+            ) if bet_estavel else None
+        })
+        
+    return pd.DataFrame(resultados)
 
 @st.cache_data(show_spinner=False)
 def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_memes="Artefatos Extraídos"):
@@ -40,8 +556,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     import re
     import unicodedata
     
-    # Stopwords para limpar os títulos no método Tradicional
-    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+    stopwords = STOPWORDS_ACADEMICAS
 
     def remover_acentos(texto):
         if not isinstance(texto, str): return ""
@@ -116,7 +631,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     # 3. MÉTRICAS TOTAIS (Cards)
     degrees = list(grau_abs_full.values())
     try: pr = nx.pagerank(G_completo, weight='weight')
-    except: pr = {n:0 for n in G_completo.nodes()}
+    except Exception: pr = {n: 0 for n in G_completo.nodes()}
     
     net_metrics = {
         'densidade': nx.density(G_completo),
@@ -166,7 +681,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     for u, v, data in G_display.edges(data=True):
         edges.append(Edge(source=u, target=v, value=data['weight'], color=cor_dinamica_aresta))
         
-    gamma = 1 + len(degrees) / sum(np.log(d / min(degrees)) for d in degrees) if min(degrees) > 0 else 0
+    gamma = _estimar_gamma_lei_potencia(degrees)
     spearman, _ = sps.spearmanr(list(deg_cent_full.values()), list(bet_cent_full.values()))
     
     net_maturity = {
@@ -182,6 +697,35 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
 def configurar_gemini():
     """Confere se há chave disponível via env ou Streamlit secrets."""
     return bool(get_gemini_api_key())
+
+
+def _chamar_gemini_com_retry(prompt: str, model_candidates, temperature: float,
+                               response_mime_type: str,
+                               max_tentativas: int = 3,
+                               delay_base: float = 2.0):
+    """
+    Wrapper com backoff exponencial para chamadas à API do Gemini.
+    Tentativa 1: imediata
+    Tentativa 2: aguarda delay_base segundos (2s por padrão)
+    Tentativa 3: aguarda delay_base * 2 segundos (4s por padrão)
+    Lança a última exceção se todas as tentativas falharem.
+    """
+    ultima_excecao = None
+    for tentativa in range(max_tentativas):
+        try:
+            return generate_content(
+                prompt=prompt,
+                model_candidates=model_candidates,
+                temperature=temperature,
+                response_mime_type=response_mime_type,
+            )
+        except Exception as e:
+            ultima_excecao = e
+            if tentativa < max_tentativas - 1:
+                espera = delay_base * (2 ** tentativa)
+                time.sleep(espera)
+    raise ultima_excecao
+
 
 def extrair_artefatos_llm(titulo, resumo):
     """Envia um prompt estruturado ao Gemini forçando um retorno em JSON."""
@@ -210,7 +754,7 @@ def extrair_artefatos_llm(titulo, resumo):
     """
     
     try:
-        response = generate_content(
+        response = _chamar_gemini_com_retry(
             prompt=prompt,
             model_candidates=DEFAULT_FAST_MODELS,
             temperature=0.2,
@@ -348,7 +892,7 @@ def detetar_explosoes(df_base, min_freq, z_score):
     df_c['Em_Explosao'] = (df_c['Frequencia'] > (df_c['Media'] + (z_score * df_c['Std']))) & (df_c['Frequencia'] >= 2)
     return df_c
 
-@st.cache_resource
+@st.cache_data(show_spinner=False)
 def gerar_grafo_genealogico(dados_lista, orientadores_foco):
     G = nx.DiGraph()
     for d in dados_lista:
@@ -433,7 +977,7 @@ def calcular_metricas_memeticas(df_base, fonte_memes="Palavras-chave"):
     if df_base.empty: 
         return pd.DataFrame(), pd.DataFrame(), 0, 0, pd.DataFrame(), pd.DataFrame()
 
-    stopwords = {'de', 'a', 'o', 'que', 'e', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'os', 'no', 'se', 'na', 'por', 'mais', 'as', 'dos', 'como', 'mas', 'ao', 'das', 'à', 'seu', 'sua', 'ou', 'nos', 'já', 'eu', 'também', 'pelo', 'pela', 'até', 'isso', 'ela', 'entre', 'sem', 'mesmo', 'aos', 'nas', 'me', 'esse', 'essa', 'num', 'nem', 'numa', 'pelos', 'pelas', 'este', 'esta', 'sobre', 'estudo', 'análise', 'proposta', 'uso', 'aplicação', 'desenvolvimento', 'modelo', 'sistema', 'avaliação', 'gestão', 'conhecimento', 'engenharia', 'objetivo', 'pesquisa', 'trabalho', 'resultados', 'método', 'foi', 'foram', 'são', 'ser', 'através', 'forma', 'apresenta', 'the', 'of', 'and', 'in', 'to', 'is', 'for', 'by', 'on', 'with', 'an', 'as', 'this', 'that', 'which', 'from', 'it', 'or', 'be', 'are', 'at', 'has', 'have', 'was', 'were', 'not', 'but', 'baseado', 'partir', 'sob', 'perspectiva', 'frente'}
+    stopwords = STOPWORDS_ACADEMICAS
 
     def remover_acentos(texto):
         if not isinstance(texto, str): return ""
@@ -627,7 +1171,7 @@ def renderizar_nuvem_interativa_html_exploracao(word_freq_dict):
     </html>
     """
 
-@st.cache_resource
+@st.cache_data(show_spinner=False)
 def gerar_nodos_coocorrencia_agraph(dados_recorte, min_coocorrencia=1):
     G = nx.Graph()
     for d in dados_recorte:
@@ -736,7 +1280,7 @@ def obter_frequencias_texto(df_hist, fonte_nuvem):
         return dict(Counter(palavras_limpas).most_common(100))
 
 
-@st.cache_resource
+@st.cache_data(show_spinner=False)
 def gerar_nodos_globais_agraph(dados_recorte, metodo_cor="Original (Categoria)", metodo_tamanho="Tamanho Fixo"):
     G = nx.Graph()
     for tese in dados_recorte:
@@ -863,7 +1407,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
     # 1. Assortatividade (Quem se conecta com quem?)
     try:
         assortatividade = nx.degree_assortativity_coefficient(G)
-    except:
+    except Exception:
         assortatividade = 0.0
 
     # 2. Rich-Club Coefficient (Os Hubs se conversam?)
@@ -874,7 +1418,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
         k_target = int(k_max * 0.8) 
         chaves_validas = [k for k in rc.keys() if k >= k_target]
         rich_club_val = rc[chaves_validas[0]] if chaves_validas else list(rc.values())[-1]
-    except:
+    except Exception:
         rich_club_val = 0.0
 
     # 3. Expoente Gamma da Lei de Potência (O grau de monopolização)
@@ -894,7 +1438,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
             gamma = abs(slope)
         else:
             gamma = 0.0
-    except:
+    except Exception:
         gamma = 0.0
 
     # 4. Correlação de Spearman (A barriga da curva 3D: Brokers vs Hubs)
@@ -903,7 +1447,7 @@ def calcular_maturidade_rede(dados_completos, _sna_global):
         graus_list = [v.get('Grau Absoluto', 0) for v in _sna_global.values()]
         bet_list = [v.get('Betweenness', 0) for v in _sna_global.values()]
         spearman_rho, _ = stats.spearmanr(graus_list, bet_list)
-    except:
+    except Exception:
         spearman_rho = 0.0
 
     return {
@@ -969,66 +1513,86 @@ def plotar_grafico_3d_sna(sna_global, tipo_alvo, termo_destaque=None):
     )
     return fig
 
-@st.cache_data
-def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
-    """Calcula os nós mais próximos usando o Índice de Jaccard (Similaridade de Vizinhança)."""
-    
+@st.cache_data(show_spinner=False)
+def construir_perfis_similaridade(dados_lista):
+    """
+    Pré-computa o 'DNA acadêmico' de todas as entidades para comparação Jaccard.
+    Separado de calcular_similares_rede para ser cacheado independentemente.
+    Cache hit nas chamadas subsequentes — O(1) em vez de O(n) por busca.
+    """
     perfis = {}
     tipos = {}
     niveis_docs = {}
-    
+
     def add_feature(entidade, feature, tipo_entidade):
-        if entidade not in perfis: 
+        if entidade not in perfis:
             perfis[entidade] = set()
             tipos[entidade] = tipo_entidade
         perfis[entidade].add(feature)
-        
-    # 1. Constrói o "DNA" (Perfil de Conexões) de cada entidade
-    for d in dados_completos:
+
+    for d in dados_lista:
         doc = d.get('titulo')
-        if not doc: continue
-        
+        if not doc:
+            continue
+
         niveis_docs[doc] = d.get('nivel_academico', 'Outros')
-        
+
         autores = d.get('autores', [])
         ori = d.get('orientador')
         cooris = d.get('co_orientadores', [])
         pks = d.get('palavras_chave', [])
         mt = d.get('macrotema')
-        
+
         todas_entidades_doc = autores + ([ori] if ori else []) + cooris + pks + ([mt] if mt else [])
-        
-        # DNA do Documento: Todas as pessoas e conceitos atrelados a ele
+
         for ent in todas_entidades_doc:
-            if ent: add_feature(doc, ent, 'Documento')
-            
-        # DNA do Autor: Seus orientadores, palavras-chave e temas que costuma escrever
+            if ent:
+                add_feature(doc, ent, 'Documento')
+
         for a in autores:
-            if ori: add_feature(a, ori, 'Autor')
-            for pk in pks: add_feature(a, pk, 'Autor')
-            if mt: add_feature(a, mt, 'Autor')
-            
-        # DNA dos Professores: Seus parceiros de banca, palavras-chave e temas dos alunos
+            if ori:
+                add_feature(a, ori, 'Autor')
+            for pk in pks:
+                add_feature(a, pk, 'Autor')
+            if mt:
+                add_feature(a, mt, 'Autor')
+
         if ori:
-            for pk in pks: add_feature(ori, pk, 'Orientador')
-            if mt: add_feature(ori, mt, 'Orientador')
-            for co in cooris: add_feature(ori, co, 'Orientador')
-            
+            for pk in pks:
+                add_feature(ori, pk, 'Orientador')
+            if mt:
+                add_feature(ori, mt, 'Orientador')
+            for co in cooris:
+                add_feature(ori, co, 'Orientador')
+
         for co in cooris:
-            for pk in pks: add_feature(co, pk, 'Co-orientador')
-            if mt: add_feature(co, mt, 'Co-orientador')
-            if ori: add_feature(co, ori, 'Co-orientador')
-            
-        # DNA dos Conceitos: Outras palavras usadas juntas, macrotema e orientadores
+            for pk in pks:
+                add_feature(co, pk, 'Co-orientador')
+            if mt:
+                add_feature(co, mt, 'Co-orientador')
+            if ori:
+                add_feature(co, ori, 'Co-orientador')
+
         for pk in pks:
-            if mt: add_feature(pk, mt, 'Palavra-chave')
-            for pk2 in pks: 
-                if pk != pk2: add_feature(pk, pk2, 'Palavra-chave')
-                
-        # DNA do Macrotema: Suas palavras-chave base e orientadores principais
+            if mt:
+                add_feature(pk, mt, 'Palavra-chave')
+            for pk2 in pks:
+                if pk != pk2:
+                    add_feature(pk, pk2, 'Palavra-chave')
+
         if mt:
-            for pk in pks: add_feature(mt, pk, 'Macrotema')
-            if ori: add_feature(mt, ori, 'Macrotema')
+            for pk in pks:
+                add_feature(mt, pk, 'Macrotema')
+            if ori:
+                add_feature(mt, ori, 'Macrotema')
+
+    return perfis, tipos, niveis_docs
+
+
+@st.cache_data
+def calcular_similares_rede(termo_foco, tipo_busca, dados_completos):
+    """Calcula os nós mais próximos usando o Índice de Jaccard (Similaridade de Vizinhança)."""
+    perfis, tipos, niveis_docs = construir_perfis_similaridade(dados_completos)
 
     if termo_foco not in perfis:
         return {}
@@ -1142,11 +1706,20 @@ def navegar_para(novo_tipo, novo_termo):
 
 # --- FUNÇÕES DE BACKEND (EXTRAÇÃO E BUSCA) ---
 def _normalizar_nivel(nivel):
-    nivel_txt = str(nivel or "")
-    if "Tese" in nivel_txt:
-        return "Teses"
-    if "Disserta" in nivel_txt:
-        return "Dissertações"
+    """
+    Normaliza o campo nivel_academico para um dos 4 valores canônicos:
+    'Teses', 'Dissertações', 'TCC', 'Outros'.
+    Case-insensitive. Robusto a variações de nomenclatura.
+    """
+    if not nivel:
+        return 'Outros'
+    nivel_str = str(nivel).lower().strip()
+    if 'tese' in nivel_str or 'doutor' in nivel_str or 'thesis' in nivel_str:
+        return 'Teses'
+    if 'disserta' in nivel_str or 'mestrado' in nivel_str or 'dissertation' in nivel_str or 'master' in nivel_str:
+        return 'Dissertações'
+    if 'tcc' in nivel_str or 'conclus' in nivel_str or 'gradua' in nivel_str:
+        return 'TCC'
     return "Outros"
 
 def _extrair_entidades_por_tipo(doc, tipo):
@@ -1177,7 +1750,7 @@ def _renderizar_tabela_ql(resumo_df, titulo):
             if v < 1:
                 return "color: #FF4B4B;"
             return "color: #F8E71C;"
-        except:
+        except Exception:
             return ""
 
     styler = resumo_df.style.map(color_ql, subset=["Valor QL"])
@@ -1364,7 +1937,7 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
             if v > 1: return 'color: #00FF00; font-weight: bold;'
             elif v < 1: return 'color: #FF4B4B;'
             return 'color: #F8E71C;'
-        except: return ''
+        except Exception: return ''
         
     styler = resumo.style.map(color_ql, subset=['QL (Especialização)'])
     
@@ -1382,16 +1955,17 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
     st.markdown("<br>", unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False) # Desativamos o spinner padrão para usar nossa barra customizada
-def calcular_sna_global(dados):
-    # 1. Inicia a barra de progresso no topo
-    progresso_texto = "🚀 Iniciando análise de rede complexa..."
-    barra = st.progress(0, text=progresso_texto)
+def calcular_sna_global(_dados_lista):
+    dados_lista = _dados_lista
+
+    # Barra só aparece na primeira execução (cache miss)
+    barra = st.progress(0, text="🚀 Iniciando análise de rede complexa...")
     
     G = nx.Graph()
-    total_docs = len(dados)
+    total_docs = len(dados_lista)
     
     # 2. Construção do Grafo (20% do progresso)
-    for i, d in enumerate(dados):
+    for i, d in enumerate(dados_lista):
         doc = d.get('titulo')
         if not doc: continue
         G.add_node(doc, tipo='Documento')
@@ -1445,7 +2019,7 @@ def calcular_sna_global(dados):
     barra.progress(85, text="🏘️ Detectando Clusters e Comunidades (Algoritmo de Louvain)...")
     try:
         mapa_comunidades = {node: i+1 for i, comm in enumerate(nx_comm.louvain_communities(G)) for node in comm}
-    except:
+    except Exception:
         mapa_comunidades = {}
         
     # 7. Finalização e Ranking (100%)
@@ -1468,56 +2042,84 @@ def calcular_sna_global(dados):
     
     return resultado
 
-@st.cache_resource
+@st.cache_data(show_spinner=False)
+def _construir_grafo_historico(dados_lista: tuple):
+    """
+    Constrói uma representação serializável do grafo com metadado de ano em cada aresta.
+    Cacheada separadamente de gerar_orbita_local para reutilizar entre frames de animação.
+
+    Recebe dados_lista como tuple (para ser hashável pelo st.cache_data).
+    Retorna o grafo completo para reconstrução rápida do recorte temporal.
+    """
+    G = nx.Graph()
+    for registro in dados_lista:
+        titulo, ano_raw, orientador, autores, coorientadores, palavras_chave, macrotema = registro
+        try:
+            ano = int(ano_raw) if ano_raw and str(ano_raw).isdigit() else 0
+        except (ValueError, TypeError):
+            ano = 0
+
+        if not titulo:
+            continue
+
+        G.add_node(titulo, tipo='Documento', ano=ano)
+
+        for a in autores:
+            if a:
+                G.add_node(a, tipo='Autor')
+                G.add_edge(titulo, a, ano=ano)
+
+        if orientador:
+            G.add_node(orientador, tipo='Orientador')
+            G.add_edge(titulo, orientador, ano=ano)
+
+        for co in coorientadores:
+            if co:
+                G.add_node(co, tipo='Co-orientador')
+                G.add_edge(titulo, co, ano=ano)
+
+        for pk in palavras_chave:
+            if pk:
+                G.add_node(pk, tipo='Conceito')
+                G.add_edge(titulo, pk, ano=ano)
+
+        if macrotema:
+            G.add_node(macrotema, tipo='Macrotema')
+            G.add_edge(titulo, macrotema, ano=ano)
+
+    return G
+
+
+@st.cache_data(show_spinner=False)
 def gerar_orbita_local(termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, dados_completos=None):
     """
     Motor in-memory de renderização visual (Fallback sem Neo4j para TCCs).
     """
-    if not dados_completos: return [], []
-    
-    # 1. Constrói a Rede Temporária Baseada no Limite de Ano
-    G = nx.Graph()
-    for d in dados_completos:
-        # Pula se o doc exceder o ano_limite
-        ano = int(d['ano']) if d.get('ano') and str(d['ano']).isdigit() else 2000
-        if ano > ano_limite:
-            continue
-            
-        doc = d.get('titulo')
-        if not doc: continue
-        
-        G.add_node(doc, tipo='Documento')
-        
-        for a in d.get('autores', []): 
-            G.add_node(a, tipo='Autor')
-            G.add_edge(doc, a)
-            
-        ori = d.get('orientador')
-        if ori: 
-            G.add_node(ori, tipo='Orientador')
-            G.add_edge(doc, ori)
-            
-        # Adicionar co-orientadores para fidelidade
-        for co in d.get('co_orientadores', []):
-            G.add_node(co, tipo='Co-orientador')
-            G.add_edge(doc, co)
-            
-        for pk in d.get('palavras_chave', []): 
-            G.add_node(pk, tipo='Conceito')
-            G.add_edge(doc, pk)
-            
-        mt = d.get('macrotema')
-        if mt:
-            G.add_node(mt, tipo='Macrotema')
-            G.add_edge(doc, mt)
-            
-    if termo_foco not in G: 
+    if not dados_completos:
         return [], []
-        
-    # 2. Extrai o Ego-Graph de acordo com a profundidade
-    ego_net = nx.ego_graph(G, termo_foco, radius=profundidade)
-    
-    # 3. Mapeamento Estético (Idêntico ao Neo4j)
+
+    G_completo = _construir_grafo_historico(tuple(
+        (d.get('titulo', ''), d.get('ano', 0), d.get('orientador', ''),
+         tuple(d.get('autores', [])), tuple(d.get('co_orientadores', [])),
+         tuple(d.get('palavras_chave', [])), d.get('macrotema', ''))
+        for d in dados_completos
+    ))
+
+    arestas_no_periodo = [
+        (u, v) for u, v, data in G_completo.edges(data=True)
+        if data.get('ano', 0) <= ano_limite
+    ]
+
+    if not arestas_no_periodo:
+        return [], []
+
+    G_filtrado = G_completo.edge_subgraph(arestas_no_periodo).copy()
+
+    if termo_foco not in G_filtrado:
+        return [], []
+
+    ego_net = nx.ego_graph(G_filtrado, termo_foco, radius=profundidade)
+
     nodes_agraph = []
     edges_agraph = []
     config_fonte = {"color": "white", "strokeWidth": 4, "strokeColor": "#1E1E1E", "face": "sans-serif", "size": 14}
@@ -1548,7 +2150,7 @@ def gerar_orbita_local(termo_foco, tipo_busca, profundidade=1, _sna_global=None,
         
     return nodes_agraph, edges_agraph
 
-@st.cache_resource
+@st.cache_data(show_spinner=False)
 def gerar_orbita_neo4j(_driver, termo_foco, tipo_busca, profundidade=1, _sna_global=None, metodo_tamanho="Tamanho Fixo", ano_limite=2026, titulos_validos=None):
     """
     Motor de renderização visual que extrai o subgrafo do Neo4j com filtro temporal e de PPG.
@@ -1683,7 +2285,7 @@ def gerar_tabela_macrotemas_perfil(docs, dados_totais):
             if v > 1: return 'color: #00FF00; font-weight: bold;'
             elif v < 1: return 'color: #FF4B4B;'
             return 'color: #F8E71C;'
-        except: return ''
+        except Exception: return ''
         
     styler2 = resumo.style.map(color_ql2, subset=['QL (Especialização)'])
     
@@ -1799,21 +2401,35 @@ def carregar_catalogo_capes_ufsc():
     return programas_capes
 
 # --- CARREGAMENTO E SELEÇÃO DA BASE CONSOLIDADA ---
-@st.cache_data
+@st.cache_data(show_spinner="📚 Carregando base de teses e dissertações...", ttl=3600)
 def carregar_base_consolidada():
     try:
-        # Lê o arquivo GZIP diretamente da memória ('rt' = Read Text)
         with gzip.open('base_consolidada_ufsc.json.gz', 'rt', encoding='utf-8') as f:
-            return json.load(f)
+            dados = json.load(f)
+        return _normalizar_documentos(dados)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError as e:
+        st.error(f"⚠️ Arquivo 'base_consolidada_ufsc.json.gz' está corrompido: {e}")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Erro inesperado ao carregar base consolidada: {e}")
+        return []
 
-@st.cache_data
+
+@st.cache_data(show_spinner="📚 Carregando base de TCCs...", ttl=3600)
 def carregar_base_tcc():
     try:
         with gzip.open('base_tcc_ufsc.json.gz', 'rt', encoding='utf-8') as f:
-            return json.load(f)
+            dados = json.load(f)
+        return _normalizar_documentos(dados)
     except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as e:
+        st.error(f"⚠️ Arquivo 'base_tcc_ufsc.json.gz' está corrompido: {e}")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Erro inesperado ao carregar base de TCCs: {e}")
         return []
 
 

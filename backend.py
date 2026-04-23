@@ -117,6 +117,53 @@ def classificar_por_percentil(row, x_mid, y_mid):
     else:
         return "↙️ Base/Declínio"
 
+
+def _extrair_termos_foresight(d: dict, tipo: str) -> list:
+    """
+    Extrai a lista de termos de um documento conforme o tipo de análise Foresight.
+
+    Suporta:
+      - 'Palavra-chave'        → campo 'palavras_chave' (list)
+      - 'Macrotema'            → campo 'macrotema' (str)
+      - 'Artefatos (Ontologia IA)' → campo 'ontologia_ia' (dict ou JSON str),
+                                     consolida teorias_e_modelos + ferramentas_e_artefatos
+                                     + metodos_e_tecnicas num único array.
+
+    Garante que strings vazias, None e estruturas inválidas sejam ignoradas.
+    """
+    import json as _json
+
+    if tipo == 'Palavra-chave':
+        termos = d.get('palavras_chave', [])
+        if not isinstance(termos, list):
+            termos = []
+        return [str(t).strip() for t in termos if t and str(t).strip()]
+
+    if tipo == 'Macrotema':
+        mt = d.get('macrotema')
+        return [str(mt).strip()] if mt and str(mt).strip() else []
+
+    if tipo == 'Artefatos (Ontologia IA)':
+        onto = d.get('ontologia_ia', {})
+        # Suporta ontologia serializada como string JSON (ex.: armazenada em CSV/banco)
+        if isinstance(onto, str):
+            try:
+                onto = _json.loads(onto)
+            except (ValueError, TypeError):
+                onto = {}
+        if not isinstance(onto, dict):
+            return []
+        termos = []
+        for chave in ('teorias_e_modelos', 'ferramentas_e_artefatos', 'metodos_e_tecnicas'):
+            itens = onto.get(chave, [])
+            if isinstance(itens, list):
+                termos.extend(str(x).strip() for x in itens if x and str(x).strip())
+        return termos
+
+    # Tipo desconhecido — retorna lista vazia para não quebrar cálculos
+    return []
+
+
 # NOVO — Adicionar ao backend.py, logo após calcular_sna_global
 @st.cache_data(show_spinner=False)
 def calcular_betweenness_bootstrap(dados_lista, tipo='Palavra-chave',
@@ -155,12 +202,7 @@ def calcular_betweenness_bootstrap(dados_lista, tipo='Palavra-chave',
     def _construir_grafo(amostra):
         G = nx.Graph()
         for d in amostra:
-            if tipo == 'Palavra-chave':
-                termos = d.get('palavras_chave', [])
-            else:  # Macrotema
-                mt = d.get('macrotema')
-                termos = [mt] if mt else []
-            termos = [t for t in termos if t]  # limpa None/vazios
+            termos = _extrair_termos_foresight(d, tipo)
             for u, v in _it.combinations(termos, 2):
                 if G.has_edge(u, v):
                     G[u][v]['weight'] += 1
@@ -309,10 +351,7 @@ def validar_foresight_historico(_dados_lista, ano_corte_teste=2018, janela_burst
     def get_freqs(df_subset):
         lista = []
         for d in df_subset.to_dict('records'):
-            if tipo == 'Palavra-chave': lista.extend(d.get('palavras_chave', []))
-            elif tipo == 'Macrotema': 
-                mt = d.get('macrotema')
-                if mt: lista.append(mt)
+            lista.extend(_extrair_termos_foresight(d, tipo))
         return Counter(lista)
 
     freq_t1_pass = get_freqs(df_t1_passado)
@@ -322,7 +361,7 @@ def validar_foresight_historico(_dados_lista, ano_corte_teste=2018, janela_burst
 
     G_t1 = nx.Graph()
     for d in df_t1.to_dict('records'):
-        termos = d.get('palavras_chave', []) if tipo == 'Palavra-chave' else ([d.get('macrotema')] if d.get('macrotema') else [])
+        termos = _extrair_termos_foresight(d, tipo)
         for u, v in itertools.combinations(termos, 2):
             if G_t1.has_edge(u, v): G_t1[u][v]['weight'] += 1
             else: G_t1.add_edge(u, v, weight=1)
@@ -470,11 +509,7 @@ def preparar_radar_foresight(_dados_lista, sna_global=None, janela_recente=3,
     def extrair_frequencias(df_periodo):
         lista = []
         for d in df_periodo.to_dict('records'):
-            if tipo == 'Palavra-chave':
-                lista.extend(d.get('palavras_chave', []))
-            elif tipo == 'Macrotema':
-                mt = d.get('macrotema')
-                if mt: lista.append(mt)
+            lista.extend(_extrair_termos_foresight(d, tipo))
         return Counter(lista)
         
     freq_passado = extrair_frequencias(df_passado)
@@ -669,7 +704,7 @@ def gerar_grafo_ecologia_memes_agraph(dados_lista, min_coocorrencia=1, fonte_mem
     
     for node in G_display.nodes():
         tamanho = 15 + (grau_abs_full[node] / max_grau_abs) * 25
-        hover_text = f"🧬 Termo: {node}\n🔗 Grau Absoluto: {grau_abs_full[node]}\n🌉 Betweenness Global: {bet_cent_full[node]:.4f}"
+        hover_text = f"🧬 Termo: {node}\n🔗 Grau Absoluto: {grau_abs_full[node]}\n🌉 Betweenness Global: {bet_cent_full[node]:.4f}\n🕸️ Closeness Global: {clo_cent_full[node]:.4f}"
         
         nodes.append(Node(
             id=node, label=node, size=tamanho, title=hover_text, color=cor_dinamica_no, 

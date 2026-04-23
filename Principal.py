@@ -132,10 +132,11 @@ if 'dados_completos' not in st.session_state or st.session_state.get('recarregar
                 st.session_state['dados_completos'] = dados_combinados
                 st.session_state['programas_selecionados_lista'] = programas_selecionados
                 st.session_state['tccs_selecionados_lista'] = tccs_selecionados
-                
+
                 nomes_combinados = programas_selecionados + tccs_selecionados
                 st.session_state['nome_programa'] = f"{len(nomes_combinados)} Origem(ns) Selecionada(s): {', '.join(nomes_combinados)}"
                 st.session_state['macrotemas_computados'] = True
+                st.session_state['sna_global_stale'] = True  # força recomputação do SNA para a nova base
                 st.session_state['recarregar'] = False
                 st.rerun()
         else:
@@ -428,15 +429,28 @@ st.markdown("<br>", unsafe_allow_html=True)
 # 4. Descritivo Dinâmico da IA (A Alma do Programa)
 if api_key_app:
     with st.spinner("A IA está analisando a amostra de documentos para sintetizar o perfil epistemológico..."):
-        descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
-        st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
+        try:
+            descritivo_dinamico = gerar_descritivo_sessao(tuple(nomes_ppgs), "\n".join(amostra_docs), api_key_app)
+            st.info(f"**Síntese de Pesquisa do PPG:** {descritivo_dinamico}")
+        except Exception as _e_gemini:
+            st.warning(f"⚠️ Não foi possível gerar a síntese dinâmica no momento (a IA pode estar sobrecarregada). Tente novamente em instantes. (Detalhe: {_e_gemini})")
 else:
     st.warning("🔑 Chave da API do Gemini não configurada em variáveis de ambiente ou secrets.")
 st.markdown("---")
 
 
 # IMPORTANTE: Movemos o cálculo SNA para cá para alimentar a nova Super-Tabela
-sna_global = calcular_sna_global(dados_completos)
+# O flag sna_global_stale garante que, em hits de cache do @st.cache_data, os dados
+# com métricas SNA injetadas sejam recuperados do cache e re-aplicados ao session_state,
+# evitando que seções dependentes fiquem invisíveis após recarregamentos sem recomputação.
+if st.session_state.get('sna_global_stale', True):
+    df_met_globais, dados_atualizados = calcular_sna_global(st.session_state['dados_completos'])
+    st.session_state['df_metricas_globais'] = df_met_globais
+    st.session_state['dados_completos'] = dados_atualizados  # Recupera os dados do cache com as colunas SNA injetadas
+    st.session_state['sna_global_stale'] = False
+
+sna_global = st.session_state['df_metricas_globais']
+dados_completos = st.session_state['dados_completos']
 
 # =========================================================================
 # 🏆 DESTAQUES DO ECOSSISTEMA (RANKINGS DE REDE)
@@ -489,9 +503,10 @@ top_ori_bet = get_top_sna(orientadores_set, 'Betweenness')
 top_coori_close = get_top_sna(coorientadores_set, 'Closeness')
 top_coori_bet = get_top_sna(coorientadores_set, 'Betweenness')
 
-# SNA Teses e Dissertações
-teses_titulos = [d.get('titulo') for d in dados_completos if 'Tese' in d.get('nivel_academico', '')]
-dissertacoes_titulos = [d.get('titulo') for d in dados_completos if 'Disserta' in d.get('nivel_academico', '')]
+# SNA Teses e Dissertações — usa _normalizar_nivel para correspondência robusta
+# (case-insensitive, suporta variações como "Tese", "tese", "Doutorado", etc.)
+teses_titulos = set(d.get('titulo') for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Teses')
+dissertacoes_titulos = set(d.get('titulo') for d in dados_completos if _normalizar_nivel(d.get('nivel_academico')) == 'Dissertações')
 
 top_tese_close = get_top_sna(teses_titulos, 'Closeness')
 top_tese_bet = get_top_sna(teses_titulos, 'Betweenness')

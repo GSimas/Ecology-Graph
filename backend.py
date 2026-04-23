@@ -1479,16 +1479,16 @@ def gerar_tabela_entidades_por_macrotema(docs_macrotema, dados_totais):
     st.markdown("<br>", unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False) # Desativamos o spinner padrão para usar nossa barra customizada
-def calcular_sna_global(dados):
+def calcular_sna_global(dados_lista):
     # 1. Inicia a barra de progresso no topo
     progresso_texto = "🚀 Iniciando análise de rede complexa..."
     barra = st.progress(0, text=progresso_texto)
-    
+
     G = nx.Graph()
-    total_docs = len(dados)
-    
+    total_docs = len(dados_lista)
+
     # 2. Construção do Grafo (20% do progresso)
-    for i, d in enumerate(dados):
+    for i, d in enumerate(dados_lista):
         doc = d.get('titulo')
         if not doc: continue
         G.add_node(doc, tipo='Documento')
@@ -1562,8 +1562,10 @@ def calcular_sna_global(dados):
 
     # Remove a barra da tela ao finalizar
     barra.empty()
-    
-    return resultado
+
+    # G não é retornado: grafos NetworkX não são serializáveis via pickle do
+    # @st.cache_data. Quem precisar do grafo deve usar @st.cache_resource separado.
+    return resultado, list(dados_lista)
 
 @st.cache_resource
 def _construir_grafo_historico(dados_lista: tuple) -> nx.Graph:
@@ -1867,16 +1869,16 @@ Diretrizes rigorosas:
 - NÃO repita o nome do(s) programa(s) no texto.
 - Retorne APENAS o parágrafo limpo.
 """
-    try:
-        response = generate_content(
-            prompt=prompt,
-            api_key=api_key,
-            model_candidates=DEFAULT_TEXT_MODELS,
-            temperature=0.3,
-        )
-        return response_text(response).strip().replace('**', '').replace('"', '')
-    except Exception as e:
-        return f"Não foi possível gerar a síntese dinâmica no momento. (Aviso: {e})"
+    # Usa retry com backoff para tolerar picos de demanda (503/UNAVAILABLE).
+    # Lança exceção em vez de retornar string de erro, evitando que @st.cache_data
+    # persista a falha como resultado válido até expirar o TTL.
+    response = _chamar_gemini_com_retry(
+        prompt=prompt,
+        model_candidates=DEFAULT_TEXT_MODELS,
+        temperature=0.3,
+        response_mime_type=None,
+    )
+    return response_text(response).strip().replace('**', '').replace('"', '')
 
 
 # --- MOTOR DE CONSULTA À CAPES SUCUPIRA ---

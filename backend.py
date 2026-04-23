@@ -2014,15 +2014,28 @@ def calcular_sna_global(_dados_lista):
             G.add_node(ori, tipo='Orientador')
             G.add_edge(doc, ori)
             
-        for pk in d.get('palavras_chave', []): 
+        for pk in d.get('palavras_chave', []):
             G.add_node(pk, tipo='Palavra-chave')
             G.add_edge(doc, pk)
-            
+
         mt = d.get('macrotema')
-        if mt: 
+        if mt:
             G.add_node(mt, tipo='Macrotema')
             G.add_edge(doc, mt)
-            
+
+        # Ontologia IA — insere teorias, ferramentas e métodos como nós do grafo
+        # global, ligados ao documento. Sem isso, o modo "Artefatos (Ontologia IA)"
+        # do Radar de Foresight só funciona com bootstrap (que constrói o próprio
+        # grafo), pois o fallback via sna_global não encontra os termos na topologia.
+        # Reutiliza o helper _extrair_termos_foresight para parse seguro
+        # (suporta dict, JSON string, e ignora entradas vazias/inválidas).
+        for art in _extrair_termos_foresight(d, 'Artefatos (Ontologia IA)'):
+            # Só atribui 'tipo' se o nó ainda não existir — preserva tipos mais
+            # específicos (ex.: 'Palavra-chave') caso um termo apareça em ambos
+            if art not in G:
+                G.add_node(art, tipo='Artefato (Ontologia IA)')
+            G.add_edge(doc, art)
+
         # Atualiza a barra durante a montagem (a cada 500 docs para não travar a UI)
         if i % 500 == 0:
             percentual = int((i / total_docs) * 20)

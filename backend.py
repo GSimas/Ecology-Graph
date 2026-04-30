@@ -2090,6 +2090,7 @@ def calcular_sna_global(_dados_lista):
     
     return resultado
 
+
 @st.cache_data(show_spinner=False)
 def _construir_grafo_historico(dados_lista: tuple):
     """

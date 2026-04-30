@@ -2,14 +2,18 @@ from functools import lru_cache
 
 from app_config import get_gemini_api_key
 
-DEFAULT_TEXT_MODELS = ("gemini-2.5-flash",)
-DEFAULT_FAST_MODELS = ("gemini-2.5-flash-lite", "gemini-2.5-flash",)
+DEFAULT_TEXT_MODELS = ("gemini-2.5-flash-lite",)
+DEFAULT_FAST_MODELS = (
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite-preview",
+)
 
 USE_NEW_SDK = False
 
 try:
     from google import genai
     from google.genai import types
+
     USE_NEW_SDK = True
 except ImportError:
     import google.generativeai as legacy_genai

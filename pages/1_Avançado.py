@@ -8,7 +8,7 @@ from pyvis.network import Network
 import json
 import re
 from collections import Counter
-import itertools  # CORRIGIDO: importação duplicada removida
+import itertools  # importação duplicada removida
 import streamlit.components.v1 as components
 from streamlit_agraph import agraph, Node, Edge, Config
 import numpy as np
@@ -46,7 +46,7 @@ from backend import (
 )
 
 # --- INICIALIZAÇÃO DEFENSIVA DE ESTADO ---
-# CORRIGIDO: sna_global, df_grid e tipo_foresight_grid adicionados ao bloco
+# sna_global, df_grid e tipo_foresight_grid adicionados ao bloco
 # defensivo para evitar recálculos custosos e perda de resultados no rerender.
 chaves_necessarias = {
     'grafo_pronto': False,
@@ -205,7 +205,7 @@ with tab_exploracao:
     st.markdown("### 🧬 Métricas de Ecologia Profunda (SNA Avançado)")
     st.caption("Diagnóstico estrutural e físico da maturidade do ecossistema de conhecimento.")
 
-    # CORRIGIDO: sna_global agora é cacheado em session_state para evitar
+    # sna_global agora é cacheado em session_state para evitar
     # recálculo duplo quando o usuário navega para a aba Fluxos/Foresight.
     if st.session_state['sna_global'] is None:
         with st.spinner("Calculando leis de escala e correlações topológicas..."):
@@ -290,7 +290,7 @@ with tab_exploracao:
     linhas_tabela = []
     macrotemas_unicos = set([d.get('macrotema', 'Multidisciplinar / Transversal') for d in dados_completos])
 
-    # CORRIGIDO: top_ql movida para fora do loop. Defini-la dentro do loop
+    # top_ql movida para fora do loop. Defini-la dentro do loop
     # a redefinia desnecessariamente a cada iteração (antipattern Python).
     def top_ql(entidades_na_mt, contagem_global, O_k, O_total):
         max_ql = -1
@@ -745,7 +745,7 @@ with tab_exploracao:
 
     df_bt = calcular_burt(dados_gerais)
     if not df_bt.empty:
-        # CORRIGIDO: template alterado de "plotly_dark" para "streamlit" para
+        # template alterado de "plotly_dark" para "streamlit" para
         # suportar os modos claro e escuro da interface de forma consistente
         # com o restante dos gráficos do arquivo.
         st.plotly_chart(
@@ -947,16 +947,27 @@ with tab_fluxos:
 
     col_for1, col_for2 = st.columns(2)
     with col_for1:
-        tipo_foresight = st.selectbox("Analisar Emergência de:", ["Palavra-chave", "Macrotema"])
+        tipo_foresight = st.selectbox("Analisar Emergência de:", ["Palavra-chave", "Macrotema", "Artefatos (Ontologia IA)"])
     with col_for2:
         janela_anos = st.slider("Janela Recente (Últimos X anos para medir):", min_value=1, max_value=10, value=3)
 
-    # CÓDIGO NOVO — com controle de bootstrap
-    sna_global = st.session_state['sna_global']
-    if sna_global is None:
-        with st.spinner("Sincronizando topologia para o Radar..."):
-            sna_global = calcular_sna_global(dados_gerais)
-            st.session_state['sna_global'] = sna_global
+    # --- VERIFICAÇÃO DE SEGURANÇA DA ONTOLOGIA ---
+    tem_ontologia = True
+    if tipo_foresight == "Artefatos (Ontologia IA)":
+        # Verifica se pelo menos 1 documento na base possui os dados da IA
+        tem_ontologia = any('ontologia_ia' in d and d['ontologia_ia'] for d in dados_gerais)
+        if not tem_ontologia:
+            st.warning("⚠️ O catálogo ontológico ainda não foi gerado nesta sessão.")
+            st.info("Para analisar a emergência de Artefatos, vá até a aba **'🧬 Memética'** e processe um lote com o Gemini ou faça o upload do seu CSV.")
+    
+    # Indentamos o resto do Radar para só rodar se passar na verificação
+    if tem_ontologia:
+        # Com controle de bootstrap
+        sna_global = st.session_state['sna_global']
+        if sna_global is None:
+            with st.spinner("Sincronizando topologia para o Radar..."):
+                sna_global = calcular_sna_global(dados_gerais)
+                st.session_state['sna_global'] = sna_global
 
     # Controle de robustez estatística (3ª coluna no layout)
     col_for3 = st.columns(1)[0]
@@ -992,7 +1003,7 @@ with tab_fluxos:
         bet_bootstrap=bet_bootstrap  # NOVO
     )
 
-    # CORRIGIDO: guard substituído de .sum() == 0 (frágil para floats próximos
+    # guard substituído de .sum() == 0 (frágil para floats próximos
     # de zero por imprecisão numérica) para .max() < 1e-9 (numericamente robusto).
     if df_foresight.empty or df_foresight['Novidade (Estrutural * IDF)'].max() < 1e-9:
         st.info("Não há dados recentes ou de rede suficientes para plotar o Radar de Prospecção.")
@@ -1083,12 +1094,12 @@ with tab_fluxos:
                 x_mid = mom_mediano
                 y_mid = nov_mediana
 
-        # CORRIGIDO: hover_data agora é construído dinamicamente para evitar
+        # hover_data construído dinamicamente para evitar
         # ValueError se o backend retornar um dataframe sem essas colunas.
         colunas_hover_desejadas = ["Tração (%)", "Aparições Recentes"]
         hover_cols = [c for c in colunas_hover_desejadas if c in df_foresight.columns]
 
-        # CORRIGIDO: template alterado de "plotly_dark" para "streamlit" para
+        # template alterado de "plotly_dark" para "streamlit" para
         # consistência com o tema da aplicação (suporte a light/dark mode).
         fig_radar = px.scatter(
             df_foresight,
@@ -1111,7 +1122,7 @@ with tab_fluxos:
         fig_radar.add_vline(x=x_mid, line_dash="dash", line_color="#7F8C8D", line_width=1)
         fig_radar.add_hline(y=y_mid, line_dash="dash", line_color="#7F8C8D", line_width=1)
 
-        # CORRIGIDO: anotações migradas para coordenadas de paper (0.0–1.0)
+        # anotações migradas para coordenadas de paper (0.0–1.0)
         # em vez de coordenadas de dados (x_max, y_min, etc.). Isso garante
         # que os rótulos fiquem sempre nos cantos do gráfico, sem sobrepor
         # os pontos de dados mais extremos — que são exatamente os mais importantes.
@@ -1161,7 +1172,7 @@ with tab_fluxos:
         """)
 
     if st.button("🚀 Executar Bateria de Testes (Auto-Otimização)", type="primary"):
-        # CORRIGIDO: mensagens de progresso movidas para dentro de um callback
+        # mensagens de progresso movidas para dentro de um callback
         # sequencial com st.empty() para refletir o progresso real da operação,
         # em vez de exibir todos os passos concluídos antes do processamento.
         _status_placeholder = st.empty()
@@ -1173,12 +1184,12 @@ with tab_fluxos:
             _status_placeholder.error("❌ Dados insuficientes para rodar o Grid Search no histórico.")
         else:
             _status_placeholder.success("✅ Bateria de Testes Concluída!")
-            # CORRIGIDO: resultado e tipo utilizado persistidos em session_state
+            # resultado e tipo utilizado persistidos em session_state
             # para sobreviver à navegação entre abas e rerenders do Streamlit.
             st.session_state['df_grid'] = df_grid_resultado
             st.session_state['tipo_foresight_grid'] = tipo_foresight
 
-    # CORRIGIDO: renderização dos resultados movida para fora do bloco do botão.
+    # renderização dos resultados movida para fora do bloco do botão.
     # Assim os resultados permanecem visíveis após qualquer rerender, enquanto o
     # usuário não acionar um novo Grid Search.
     if st.session_state.get('df_grid') is not None and not st.session_state['df_grid'].empty:
@@ -1262,10 +1273,57 @@ with tab_memes:
 
     st.markdown("---")
 
-    # --- TABELA DE VISUALIZAÇÃO E EXPORTAÇÃO DA IA (BLINDADA) ---
+    # --- TABELA DE VISUALIZAÇÃO, UPLOAD E EXPORTAÇÃO DA IA ---
     st.markdown("#### 🗂️ Catálogo de Artefatos Extraídos (Base de Conhecimento)")
-    st.caption("Verifique e baixe o que a inteligência artificial conseguiu encontrar nos documentos processados até o momento.")
+    st.caption("Verifique e baixe o que a inteligência artificial encontrou, ou faça upload de um catálogo pré-processado.")
 
+    # --- MÓDULO DE UPLOAD DE CSV ---
+    with st.expander("⬆️ Fazer Upload de Catálogo Existente (CSV)"):
+        st.markdown("Já possui um catálogo processado anteriormente? Faça o upload do arquivo CSV para injetar os dados diretamente na base atual sem gastar cotas da API.")
+        arquivo_up = st.file_uploader("Selecione o arquivo CSV do Catálogo Ontológico", type=["csv"])
+        
+        if arquivo_up is not None:
+            try:
+                df_up = pd.read_csv(arquivo_up)
+                colunas_necessarias = ['Título', 'Teorias e Modelos', 'Ferramentas e Artefatos', 'Métodos e Técnicas']
+                
+                if all(col in df_up.columns for col in colunas_necessarias):
+                    with st.spinner("Injetando dados na rede..."):
+                        docs_atualizados = 0
+                        # Converte a base atual para acesso rápido por título
+                        mapa_titulos = {str(d.get('titulo', '')).strip().lower(): d for d in dados_gerais}
+                        
+                        for index, row in df_up.iterrows():
+                            titulo_csv = str(row['Título']).strip().lower()
+                            if titulo_csv in mapa_titulos:
+                                d = mapa_titulos[titulo_csv]
+                                
+                                # Função auxiliar para reverter a string do CSV (separada por vírgula) para Lista
+                                def parse_str_to_list(s):
+                                    if pd.isna(s) or str(s).strip() == "": return []
+                                    return [item.strip() for item in str(s).split(",")]
+
+                                # Atualiza o documento com a ontologia lida do CSV
+                                d['ontologia_ia'] = {
+                                    'teorias_e_modelos': parse_str_to_list(row['Teorias e Modelos']),
+                                    'ferramentas_e_artefatos': parse_str_to_list(row['Ferramentas e Artefatos']),
+                                    'metodos_e_tecnicas': parse_str_to_list(row['Métodos e Técnicas'])
+                                }
+                                docs_atualizados += 1
+                        
+                        if docs_atualizados > 0:
+                            st.session_state['dados_completos'] = dados_gerais
+                            st.success(f"✅ Sucesso! {docs_atualizados} documentos foram enriquecidos com o catálogo carregado.")
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ O upload foi lido, mas nenhum 'Título' do CSV coincidiu com a base atual que está carregada na memória.")
+                else:
+                    st.error("O CSV não possui as colunas estruturais corretas. Certifique-se de usar o arquivo gerado pelo botão 'Exportar Catálogo' desta plataforma.")
+            except Exception as e:
+                st.error(f"Erro ao ler o arquivo CSV: {e}")
+
+    # Lógica de renderização da tabela atual
     dados_ontologia = []
     for d in dados_gerais:
         if 'ontologia_ia' in d and d['ontologia_ia']:
@@ -1322,7 +1380,7 @@ with tab_memes:
 
     fonte_param = "Artefatos Extraídos" if "IA" in fonte_selecionada else "Palavras-chave"
 
-    # CORRIGIDO: dupla chamada idêntica de calcular_metricas_memeticas removida.
+    # dupla chamada idêntica de calcular_metricas_memeticas removida.
     # A primeira chamada (linhas 1151-1153 originais) era imediatamente sobrescrita
     # pela segunda, causando processamento duplo desnecessário.
     df_fecundidade, df_longevidade, mortos, vivos, df_mortos, df_vivos = calcular_metricas_memeticas(

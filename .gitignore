@@ -1,2 +1,4 @@
 .streamlit/
 base_consolidada_ufsc.json
+.claude/
+.agent/
